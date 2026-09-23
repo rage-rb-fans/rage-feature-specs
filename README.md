@@ -19,6 +19,9 @@ templates/
 ├── feature.md
 ├── task.md
 └── adr.md
+
+.workflow/                       # optional local reports; gitignored
+└── evidence/
 ```
 
 - `features/` contains one directory per feature.
@@ -26,13 +29,14 @@ templates/
 - `tasks/` contains small, independently implementable units of work.
 - `adr/` contains architecture decision records when a feature requires a significant technical decision.
 - `templates/` contains starting templates for each document type.
+- `.workflow/evidence/` may hold local review, gap, and verification reports; it is not canonical state and is not committed.
 
-## Feature status
+## Task status
 
-Each feature declares its status in the front matter of `spec.md`:
+Parent feature specifications have no lifecycle status. Each task declares its own status:
 
-- `draft` — the specification is being discussed and refined.
-- `implementation` — the specification is agreed and ready to implement.
-- `done` — the implementation is merged and its acceptance criteria are verified.
+- `draft` — requirements are being discussed or amended.
+- `ready-for-development` — the published task is approved for implementation.
+- `done` — implementation is merged, verified, and linked from the Result section.
 
-Feature directories remain in place when their status changes so links to specifications, tasks, and decisions stay stable.
+Feature directories remain in place so links to specifications, tasks, and decisions stay stable. The parent task checklist summarizes progress without gating independently reviewable tasks.

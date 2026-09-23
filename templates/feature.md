@@ -1,6 +1,5 @@
 ---
 title: Feature name
-status: draft
 ---
 
 # Feature name

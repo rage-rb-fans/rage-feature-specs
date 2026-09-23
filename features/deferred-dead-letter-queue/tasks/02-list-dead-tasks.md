@@ -1,5 +1,5 @@
 ---
-status: todo
+status: ready-for-development
 ---
 
 # List dead tasks

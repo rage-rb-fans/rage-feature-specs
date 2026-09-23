@@ -1,6 +1,5 @@
 ---
 title: Dead letter queue for deferred tasks
-status: implementation
 ---
 
 # Dead letter queue for deferred tasks

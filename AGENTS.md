@@ -12,16 +12,11 @@ This repository is the specification knowledge base for the [Rage Ruby framework
 
 ## Statuses
 
-Feature statuses:
+Parent feature specifications have no lifecycle status. Each task advances independently:
 
-- `draft`: the specification is still being discussed. Do not treat it as approved for implementation.
-- `implementation`: the specification is approved and its incomplete tasks may be implemented.
-- `done`: the feature is implemented and its acceptance criteria have been verified.
-
-Task statuses:
-
-- `todo`: ready or waiting to be implemented, subject to the parent feature's status.
-- `done`: implemented and verified. The Result section must link to the implementation.
+- `draft`: requirements are still being developed or amended. Do not implement it.
+- `ready-for-development`: published and explicitly approved for implementation.
+- `done`: implementation merged and verified. The Result section must link to the implementation.
 
 ADR statuses use the values defined by the ADR itself, such as `proposed`, `accepted`, or `superseded`.
 
@@ -41,7 +36,7 @@ After implementation is merged:
 1. Change the task status to `done`.
 2. Complete its acceptance criteria and Result section with links to the implementation pull request and, when useful, the merge commit.
 3. Mark the task complete in the parent feature's task list.
-4. Change the feature status to `done` only when all tasks are complete and the feature-level acceptance criteria have been verified.
+4. Leave the parent specification without a status; its checklist summarizes task progress without gating other tasks.
 
 ## Editing specifications
 
@@ -50,3 +45,4 @@ After implementation is merged:
 - Preserve links between a feature, its tasks, its ADRs, the Rage issue, and implementation pull requests.
 - Record significant technical choices in an ADR instead of hiding them in task implementation notes.
 - Do not mark acceptance criteria complete based only on an intended design; require evidence from the merged implementation or its verification.
+- Keep optional local review, gap, and verification reports under the gitignored `.workflow/evidence/` directory. They are not canonical task state.

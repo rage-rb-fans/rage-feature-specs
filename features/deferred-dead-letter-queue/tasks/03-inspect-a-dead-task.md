@@ -1,5 +1,5 @@
 ---
-status: todo
+status: ready-for-development
 ---
 
 # Inspect a dead task

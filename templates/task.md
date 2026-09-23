@@ -1,5 +1,5 @@
 ---
-status: todo
+status: draft
 ---
 
 # Task name

@@ -1,5 +1,5 @@
 ---
-status: todo
+status: ready-for-development
 ---
 
 # Add Rake operations and documentation
