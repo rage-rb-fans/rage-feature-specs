@@ -6,7 +6,7 @@ status: ready-for-development
 
 ## Goal
 
-Expose the durable dead-task store as a newest-first Enumerable. The collection yields passive, read-only summaries. It decodes record payloads in bounded batches instead of loading every entry at once.
+Expose the durable dead-task store as an oldest-first Enumerable. The collection yields passive, read-only summaries. It decodes selected record payloads in internally bounded batches instead of loading every entry at once.
 
 ## Context
 
@@ -41,7 +41,8 @@ Follow [ADR-001](../adr/001-public-dead-task-object-model.md).
 - A **logical dead task** is the newest fully valid record for one task ID within that snapshot.
 - A **payload** is the top-level stored record data that Rage decodes and wraps as a `DeadTask`. Its opaque execution context remains serialized in this task.
 - A **read descriptor** is the open file handle used to read the snapshot.
-- A **traversal execution** is one run of the collection's `each` body. It owns its snapshot descriptor and boundary, reverse-reader cursor and buffer, `seen_ids`, and decoded batch.
+- A **traversal execution** is one run of the collection's `each` body. It owns its snapshot descriptor and boundary, reverse-reader cursor and buffer, winner index, and decoded batch.
+- A **winner index** maps each logical task ID to the location of its newest fully valid physical record in the snapshot. Its selected record locations remain in newest-to-oldest discovery order so reversing that order yields the collection's oldest-first order without retaining every decoded payload.
 - The **snapshot boundary** is the byte position immediately after the last complete newline-terminated record that exists when traversal starts. An unfinished tail after that position is not part of the snapshot.
 - **Rename-based compaction** is task 01's removal process: write surviving records to a temporary file, then rename that file over the live data path.
 
@@ -50,33 +51,32 @@ Follow [ADR-001](../adr/001-public-dead-task-object-model.md).
 ### Public collection and entries
 
 - Add the memoized `Rage::Deferred.dead_tasks` accessor.
-- The accessor returns a `Rage::Deferred::DeadTasks` collection. Creating or memoizing this collection must not call `Rage::Deferred.__backend`.
+- The accessor returns a `Rage::Deferred::DeadTasks` collection initialized with the shared memoized backend obtained through `Rage::Deferred.__backend`. Resolving that backend while creating the collection is allowed.
 - Repeated accessor calls return the same collection object. The wrapper may retain:
-  - an immutable lazy backend resolver or an equivalent collaborator;
+  - the shared backend object;
   - immutable collaborators or configuration; and
   - the collection-level mutation behavior added by later tasks.
-- When a collection operation needs storage, the resolver must go through `Rage::Deferred.__backend`. The collection must not construct a backend separately. This guarantees that the collection and queue use the identical backend object whether the queue or collection initializes it first.
-- Obtaining the collection must not resolve the backend or open, create, scan, or preload the store.
+- The collection must not construct a backend separately. The accessor passes the object returned by `Rage::Deferred.__backend`, which guarantees that the collection and queue use the identical backend object whether the queue or collection initializes it first.
+- Obtaining the collection may initialize the backend, including its normal initialization side effects. It must not open a DLQ snapshot descriptor or scan, decode, or preload DLQ records.
 - `DeadTasks` includes `Enumerable`.
-- The shared collection wrapper must not retain state that belongs to one traversal. In particular, it must not retain a snapshot descriptor or boundary, reverse-reader cursor or buffer, `seen_ids`, decoded batch, current Enumerator, or traversal registry.
+- The shared collection wrapper must not retain state that belongs to one traversal. In particular, it must not retain a snapshot descriptor or boundary, reverse-reader cursor or buffer, winner index, decoded batch, current Enumerator, or traversal registry.
 - Define `Rage::Deferred::DeadTask` as a passive, read-only summary value. At this stage, an entry contains only stored record data.
-- A `DeadTask` must not retain the `DeadTasks` collection, the raw backend, the backend resolver, an operation delegate, or any other mutation dependency.
+- A `DeadTask` must not retain the `DeadTasks` collection, the raw backend, an operation delegate, or any other mutation dependency.
 - Entry construction and raw backend records remain private.
 
 ### Enumeration and snapshot boundary
 
-- Block-based `each(batch_size: 100)` is the primary and recommended traversal form.
-- Calling `each` without a block returns a new normal Ruby `Enumerator`, as an `enum_for`-style implementation would. It has standard Ruby 3.3 behavior. Returning this unadvanced Enumerator must not resolve the backend. This task does not add `close` or another Rage-specific lifecycle method to that Enumerator.
+- Block-based `each` is the primary and recommended traversal form. It accepts no public batching option.
+- Calling `each` without a block returns a new normal Ruby `Enumerator`, as an `enum_for`-style implementation would. It has standard Ruby 3.3 behavior. Returning this unadvanced Enumerator must not open a DLQ snapshot descriptor or scan or decode DLQ records. This task does not add `close` or another Rage-specific lifecycle method to that Enumerator.
 - Each block traversal and each ordinary top-level Enumerable operation invokes `DeadTasks#each` and owns one traversal execution. Separate calls such as `find`, `map`, `filter_map`, `count`, or `each` use separate cursors and snapshots. Repeated calls on the memoized collection do not share traversal state.
-- `batch_size` must be a positive Integer. `DeadTasks#each` validates it immediately, before returning a no-block Enumerator or starting block traversal. Any other value raises `ArgumentError`. This validation must not call the backend resolver or open, create, scan, or decode the store.
 - Returning a valid no-block Enumerator must not establish or decode a snapshot. Its first traversal execution establishes the snapshot.
-- Traversal yields logical dead tasks newest-first.
-- When a valid traversal execution starts, resolve the backend through the wrapper's lazy resolver. For Disk, then acquire task 01's permanent dead-task lock, open the current live data file, and locate the snapshot boundary. Release the lock after capturing the descriptor and boundary. Setup must not scan or validate every complete record.
+- Traversal yields logical dead tasks oldest-first according to the physical positions of their selected winning records. Therefore `dead_tasks.first(20)` returns the oldest 20 logical dead tasks in the captured snapshot. A duplicated ID whose winning record is newer than other tasks is ordered at that newer winning record's position, not at the position of an older superseded copy.
+- When a valid traversal execution starts, use the wrapper's retained backend. For Disk, acquire task 01's permanent dead-task lock, open the current live data file for the snapshot, and locate the snapshot boundary. Release the lock after capturing the descriptor and boundary. Setup must not scan or validate every complete record.
 - If the file ends with an incomplete tail that has no terminating newline, silently exclude the entire tail. Setup may read backwards in fixed-size chunks to find the preceding newline while holding the lock. It must not parse or decode earlier complete records.
 - Never read a snapshot record past the captured boundary. An append after setup, including an append that first repairs an incomplete tail through task 01's real `add` path, is not part of that traversal.
 - Keep the snapshot descriptor open. If compaction renames a replacement over the live path, the descriptor still reads the original inode up to the fixed boundary.
 - Appending, repairing a torn tail, or rename-compacting the live store between yields must not skip, duplicate, reorder, or replace remaining logical entries when traversal continues normally.
-- Every traversal execution created by a separate collection operation owns its own snapshot descriptor, boundary, cursor, reverse-reader buffer, `seen_ids`, and decoded batch. This includes overlapping external Enumerators, nested block traversal, and same-process Fiber-interleaved traversal. Exhausting, breaking, or raising in one collection traversal must not alter another.
+- Every traversal execution created by a separate collection operation owns its own snapshot descriptor, boundary, cursor, reverse-reader buffer, winner index, and decoded batch. This includes overlapping external Enumerators, nested block traversal, and same-process Fiber-interleaved traversal. Exhausting, breaking, or raising in one collection traversal must not alter another.
 - Each traversal establishes its snapshot independently. For example, first advance one Enumerator, append a new record, and then first advance a second Enumerator. The first snapshot excludes the new record, while the second may include it.
 - This task guarantees reentrant use of the memoized wrapper and isolation between traversals. It does not introduce a broader thread-safety promise beyond Rage's existing Iodine/Fiber execution model.
 - Tests must start and pause an enumeration, change the live store through task 01's internal backend methods, and then resume enumeration. They must not depend on the public `delete` or `retry` methods added by later tasks.
@@ -89,14 +89,14 @@ Follow [ADR-001](../adr/001-public-dead-task-object-model.md).
 - Callers that need independent complete traversals should start separate collection operations. Mixed manual consumption of one returned Enumerator is allowed but receives no Rage-specific lifecycle guarantee.
 - Separate collection traversals are reentrant under Rage's single-threaded Fiber model. This task adds no broader thread-safety guarantee.
 
-### Lazy reverse traversal and memory
+### Reverse selection scan, oldest-first delivery, and memory
 
-- Read complete physical records backwards from the snapshot boundary. Validate a record only when traversal reaches it.
-- Maintain a separate `seen_ids` set for each traversal. Add an ID only after its physical record passes every validity check below. Once an ID is in the set, an older physical record with the same ID cannot replace it.
-- A newer invalid duplicate does not add its ID to `seen_ids`. Continue backwards so an older, fully valid record with that ID can become the logical entry.
-- Decode and wrap no more than `batch_size` valid payloads at one time. Do not build or cache an eager array of every entry, every record offset, or every payload.
-- Traversal memory includes the incremental `seen_ids` set and at most one decoded payload batch. It also includes the reverse reader's bounded byte buffer and the bytes for the physical record currently being checked. A complete traversal can therefore retain O(distinct valid IDs encountered) metadata. Its total memory use is not bounded independently of store size.
-- Stopping early must stop further reverse traversal. Do not parse or decode records that belong only to older batches that have not been requested. Work already performed for the current batch remains bounded by `batch_size`.
+- Before yielding its first entry, read every complete physical record backwards from the snapshot boundary. Validate each record and build a per-traversal winner index. Add an ID and the winning record's location only after that physical record passes every validity check below. Once an ID is in the index, an older physical record with the same ID cannot replace it.
+- A newer invalid duplicate does not reserve its ID. Continue backwards so an older, fully valid record with that ID can become the logical entry.
+- After the reverse selection scan completes, visit the selected winning locations in the reverse of discovery order, which is oldest-first physical order. Re-read, decode, wrap, and yield those winners using a fixed internal payload batch size. The batch size is private implementation knowledge: callers cannot supply or configure it, its numeric value is not part of compatibility, and tests assert the bound rather than a particular value.
+- Do not cache an eager array of every decoded entry or payload. The complete winner index is required: oldest-first output combined with newest-valid duplicate selection cannot be decided by a one-pass forward scan or by yielding during the reverse scan.
+- Traversal memory includes one winner-index entry per distinct valid logical ID and at most one internally bounded decoded payload batch. It also includes the reverse reader's bounded byte buffer and the bytes for the physical record currently being checked. Total traversal memory is O(distinct valid logical IDs) and is not bounded independently of store size.
+- `first`, `take`, `find`, an early block exit, or partial external iteration cannot avoid the complete reverse selection scan, because a later physical record can supersede an apparently older task with the same ID. Early termination avoids only re-reading, decoding, wrapping, and yielding selected winners after the terminal condition, apart from entries already decoded into the current internal batch.
 - A caller may still deliberately materialize all public entries with a standard Enumerable method such as `to_a`; caller-retained memory is outside the iterator guarantee.
 
 ### Record validity and duplicate selection
@@ -123,7 +123,7 @@ Skipped records and fragments represent recoverable corruption. They are not ope
 
 ### Recoverable corruption and operational failures
 
-- Invalid physical records and an excluded incomplete tail are skipped without logging or terminal output. Traversal validates invalid records only as lazy reverse reading reaches them. Do not parse untouched older records merely to diagnose corruption.
+- Invalid physical records and an excluded incomplete tail are skipped without logging or terminal output. Enumeration inspects every complete physical record during its required reverse selection scan; it performs no additional scan merely to diagnose corruption.
 - `Rage::Deferred::DeadTasksLockTimeout` during snapshot acquisition is an operational failure, not a skipped item. Filesystem errors from open, read, seek, or descriptor cleanup are also operational failures. Propagate these errors unchanged from the lazy advancement that performs the operation. Do not translate them into a generic listing error. For block traversal, they propagate from the `each` call.
 - Release every acquired lock and each normally unwound traversal descriptor through `ensure`. If traversal, application code, or storage work is already raising an exception, cleanup must not replace it. If storage cleanup is the only failing operation, propagate that cleanup exception instead of suppressing it.
 
@@ -138,6 +138,7 @@ For no-block and lazy iteration:
 
 - Full exhaustion runs the traversal's normal `ensure` cleanup.
 - A partially consumed external or derived/lazy Enumerator can keep its descriptor open if the traversal execution remains suspended. After rename-based compaction, that descriptor can also keep the old unlinked inode on disk.
+- Because the selection scan finishes before the first yield, that suspended execution also retains its complete winner index.
 - The descriptor is released only when that execution later exhausts, Ruby unwinds it, or the unreachable execution is garbage-collected. The public API does not promise when garbage collection or an optional finalizer runs.
 - This task adds no public `close` method, idle timeout, or other deterministic cancellation mechanism. Prefer block-based traversal or a terminal Enumerable operation when prompt cleanup matters.
 
@@ -157,9 +158,9 @@ For no-block and lazy iteration:
 - Keep storage and snapshot helpers private. Use YARD `@private` where Ruby visibility cannot express that boundary.
 - Document all of the following:
   - the accessor, collection, and passive summary readers;
-  - lazy backend resolution and the shared backend identity used by the collection and queue;
-  - immediate `batch_size` validation and the fact that validation has no storage side effects;
-  - stable snapshots, lazy reverse traversal, complete-traversal `seen_ids` memory, and decoded-payload batching;
+  - direct use of the shared backend identity by the collection and queue, and traversal-lazy DLQ snapshot work;
+  - the argument-free public `each` API and private internal payload-batch sizing;
+  - stable snapshots, the complete reverse selection scan, the winner index, oldest-first delivery, and decoded-payload batching;
   - silent skipping of invalid records and an incomplete tail;
   - unchanged propagation of operational errors;
   - automatic cleanup for block traversal and normally unwound terminal Enumerable operations;
@@ -167,7 +168,7 @@ For no-block and lazy iteration:
   - nondeterministic descriptor cleanup for abandoned partial external or lazy traversal;
   - the lifetime of an old, unlinked inode; and
   - the sensitive-data risk.
-- Reverse file reading and top-level Marshal decoding are synchronous work in the calling Fiber. Document this behavior. Snapshot setup no longer scans the complete store under lock, but a large traversal can still delay other work in that worker.
+- Reverse file reading, winner-index construction, selected-record re-reading, and top-level Marshal decoding are synchronous work in the calling Fiber. Document this behavior. Snapshot setup does not scan the complete store under lock, but every non-empty traversal scans the complete snapshot before its first yield and a large traversal can delay other work in that worker.
 - Preserve Ruby 3.3.0 compatibility and the existing `config.deferred.backend` contract.
 - Do not add polling or work to successful deferred-task execution.
 
@@ -175,15 +176,15 @@ For no-block and lazy iteration:
 
 ### How traversal works
 
-1. `Rage::Deferred.dead_tasks` creates or returns the collection. It keeps a lazy resolver but does not call `Rage::Deferred.__backend` or touch the store.
-2. `DeadTasks#each` validates `batch_size` without resolving the backend or touching the store. A no-block call returns a normal lazy Enumerator. The memoized collection does not register executions or copy their state onto itself.
-3. When a block, Enumerable operation, or external Enumerator actually starts traversal, the collection resolves storage through `Rage::Deferred.__backend`. Disk then takes the permanent lock and opens the current live data file. If the queue already initialized the backend, the resolver returns that same object. If traversal initializes it first, the queue later receives that same object.
+1. `Rage::Deferred.dead_tasks` resolves the shared memoized backend through `Rage::Deferred.__backend`, passes that object directly to a new collection when needed, and then returns the memoized collection. Backend initialization may occur here, but no DLQ snapshot is opened and no DLQ record is scanned, decoded, or preloaded.
+2. A no-block `DeadTasks#each` call returns a normal lazy Enumerator without starting DLQ snapshot work. The memoized collection does not register executions or copy their state onto itself. `each` exposes no public batch-size argument.
+3. When a block, Enumerable operation, or external Enumerator actually starts traversal, the collection uses its retained backend. Disk then takes the permanent lock and opens the current live data file for the snapshot. If the queue already initialized the backend, the collection receives that exact object. If collection access initializes it first, the queue later receives that exact object.
 4. Disk finds the last newline at or before the current end of file. The fixed snapshot boundary is the position immediately after that newline. If the file already ends in a newline, the boundary is its current size. If the file contains no newline, the boundary is zero. An incomplete tail is silently excluded.
 5. Disk releases the lock but keeps the read descriptor. All later snapshot reads are limited to bytes before the captured boundary.
-6. A bounded reverse-line reader walks complete records from the boundary toward byte zero. It frame-validates and top-level-decodes records lazily.
-7. For each record, Disk checks the complete schema and the inner/outer ID match. An invalid record is silently skipped and does not reserve its ID. If a fully valid record's ID has not been seen, Disk adds the ID to `seen_ids`, wraps the record, and includes it in the next bounded batch. Older records with that ID cannot be yielded.
-8. The traversal execution yields entries newest-first. It performs no further storage work while suspended.
-9. When traversal exhausts or block/internal control flow unwinds, `ensure` closes that execution's descriptor without masking an exception already in flight.
+6. A bounded reverse-line reader walks every complete record from the boundary toward byte zero. For each record, Disk frame-validates and top-level-decodes it, then checks the complete schema and inner/outer ID match. An invalid record is silently skipped and does not reserve its ID.
+7. The first fully valid record found for an ID is its winner. Disk records that winner's physical location in a per-traversal index; older records with that ID cannot replace it. The scan must reach byte zero before any entry is yielded.
+8. Disk visits winning locations in reverse discovery order, re-reads and decodes them in a fixed internally sized batch, and yields entries oldest-first. It performs no further storage work while suspended between batches.
+9. When traversal exhausts or block/internal control flow unwinds, `ensure` closes that execution's descriptor and discards its winner index without masking an exception already in flight.
 
 This design makes the snapshot stable in three different storage cases:
 
@@ -206,7 +207,7 @@ end
 No-block `each` returns a normal Ruby Enumerator:
 
 ```ruby
-iterator = dead_tasks.each(batch_size: 100)
+iterator = dead_tasks.each
 inspect_one(iterator.next)
 ```
 
@@ -242,18 +243,17 @@ second.next # snapshot B starts later and may include the appended task
 - Do not add public exact-ID lookup or context/argument readers. Those belong to task 03.
 - Do not add `delete`, `retry`, or mutation wiring. Those belong to tasks 04 and 05.
 - Do not inject or retain any mutation-capable object in a `DeadTask`.
-- Do not build the former complete ID/offset snapshot index.
+- Do not omit the complete winner index required to reconcile oldest-first output with newest-valid duplicate selection. Keep only the selected location metadata needed to re-read winners; do not retain every physical record or decoded payload.
 - Do not store or cache traversal state on the memoized `DeadTasks` collection.
-- Do not call `Rage::Deferred.__backend` while creating or returning the memoized collection, validating `batch_size`, or returning a valid unadvanced no-block Enumerator.
-- Do not construct a backend inside `DeadTasks`. Resolve it through `Rage::Deferred.__backend` when an operation actually needs storage so the queue and collection always share one backend instance.
+- Do not start DLQ snapshot work while creating or returning the memoized collection or returning a valid unadvanced no-block Enumerator. In particular, do not open a snapshot descriptor or scan, decode, or preload DLQ records before traversal starts.
+- Do not construct a backend inside `DeadTasks`. Pass it the shared memoized backend returned by `Rage::Deferred.__backend` so the queue and collection always use one backend instance.
 - Do not replace standard Ruby Enumerator behavior with a shared-cursor, lookahead, generation, or mixed-consumer protocol.
-- Do not defer `batch_size` validation until first advancement or touch the backend while validating it.
 - Do not mark an ID as seen until one of its records has passed frame, top-level decode, schema, and ID-consistency validation.
 - Do not read or frame-parse beyond the captured complete-record boundary.
 - Do not hold a filesystem lock while decoding a record or calling a user block.
 - Do not constantize application classes.
 - Do not deserialize or expose raw opaque context bytes.
-- Do not describe `batch_size` as a bound on `seen_ids`, caller-retained entries, or the size of one stored physical record.
+- Do not expose the internal decoded-payload batch size as a public parameter, configuration option, or compatibility guarantee. It does not bound the winner index, caller-retained entries, or the size of one stored physical record.
 - Do not add a public `close` method to the returned Enumerator or its derivatives. Do not claim that abandoning a partial external or lazy traversal releases resources deterministically.
 - Garbage collection or a carefully implemented finalizer may provide best-effort cleanup, but tests and public guarantees must not depend on its timing. Do not add an idle timeout.
 - Do not scan extra records or emit logging or terminal output merely to report recoverable corruption.
@@ -261,48 +261,49 @@ second.next # snapshot B starts later and may include the appended task
 
 ## Acceptance criteria
 
-- [ ] `Rage::Deferred.dead_tasks` is memoized. Repeated calls return the same shared public collection object without calling `Rage::Deferred.__backend`.
-- [ ] The collection retains a lazy resolver or equivalent collaborator. Storage operations resolve through `Rage::Deferred.__backend`, so the collection and queue use one identical memoized backend object regardless of which one initializes it first.
+- [ ] `Rage::Deferred.dead_tasks` is memoized. Repeated calls return the same shared public collection object, initialized with the shared memoized backend obtained through `Rage::Deferred.__backend`.
+- [ ] The collection retains that backend object directly. The collection and queue use one identical memoized backend object regardless of which one initializes it first.
 - [ ] The shared collection retains no traversal state. Every no-block `each` call returns a distinct normal Ruby Enumerator. Each block traversal and top-level Enumerable operation owns a private traversal execution.
-- [ ] Obtaining the collection or a valid unadvanced Enumerator does not resolve the backend or open, create, scan, or decode the store.
-- [ ] `DeadTasks#each` validates `batch_size` immediately. An invalid value raises `ArgumentError` before a no-block Enumerator is returned or block traversal begins. Validation does not resolve the backend or access storage.
+- [ ] Obtaining the collection may resolve and initialize the backend. Obtaining the collection or a valid unadvanced Enumerator does not open a DLQ snapshot descriptor or scan, decode, or preload DLQ records.
+- [ ] `DeadTasks#each` exposes no public batch-size option. Decoded winner payloads are held in a fixed internally bounded batch whose numeric size is not part of the public contract.
 - [ ] The no-block return value is a normal lazy Ruby Enumerator. It has standard Ruby 3.3 behavior and no Rage-specific `close`, shared-cursor, lookahead, generation, or mixed-consumer lifecycle.
 - [ ] Separate top-level Enumerable operations and separate collection `each` calls use separate traversal executions and snapshots. Mixed internal and external consumption of one returned Enumerator follows standard Ruby behavior without Rage synchronization.
 - [ ] Overlapping collection Enumerators, nested traversal, and same-process Fiber-interleaved traversal remain independent. Exhaustion, `break`, or an exception in one collection traversal does not affect another.
 - [ ] Snapshot boundaries are established independently on first advancement, so a later-starting Enumerator may include an append that an already-started Enumerator excludes.
 - [ ] Under the permanent lock, Disk setup captures an open descriptor and the last complete-record boundary. It does not scan or decode all earlier complete records. It releases the lock before validation or yielding.
-- [ ] Traversal reads complete records backwards and lazily, then yields them newest-first. It retains an incremental `seen_ids` set instead of a full offset index and holds at most one decoded payload batch.
+- [ ] Before its first yield, traversal scans all complete snapshot records backwards, selects the newest fully valid record for every ID into a complete winner index, and then yields the winners oldest-first by selected physical position. It holds at most one internally bounded decoded payload batch in addition to that index.
 - [ ] For duplicate IDs, the newest fully valid record is yielded. A newer malformed, CRC-invalid, Marshal-unreadable, non-Hash, schema-invalid, or inner/outer-ID-mismatched record does not hide an older fully valid record.
-- [ ] Missing or wrongly typed required fields and an incomplete tail are silently skipped without payload disclosure or eager inspection of untouched older records. On Disk, the outer framed ID is consistently used as the public and logical ID.
+- [ ] Missing or wrongly typed required fields and an incomplete tail are silently skipped without payload disclosure or diagnostic output. On Disk, the outer framed ID is consistently used as the public and logical ID.
 - [ ] A normally continuing snapshot is unchanged by append, task 01 torn-tail repair plus append, or rename-based compaction performed through backend or storage hooks between yields.
-- [ ] Stopping before another batch prevents parsing or decoding records belonging only to untouched older batches.
+- [ ] `first(20)` returns the oldest 20 logical tasks by winning-record position. It performs the complete selection scan before yielding, but does not re-read and decode later winners beyond work already performed for its current internal batch.
 - [ ] Enumeration closes snapshot resources on exhaustion, block `break`, non-local exit, exception, and normally unwound terminal Enumerable early exit. It never holds the dead-task lock while decoding or running user code.
 - [ ] A partially consumed external or lazy traversal may retain its descriptor and an old unlinked inode until that execution exhausts, unwinds, or is garbage-collected. Rage offers no deterministic public cancellation API in this task.
 - [ ] Snapshot-acquisition lock timeout and open/read/seek/cleanup errors propagate unchanged from the lazy operation that encounters them. Cleanup runs through `ensure` and does not mask an existing exception. When cleanup is the only failure, its original storage exception propagates.
 - [ ] Summary entries are passive, read-only values and expose the documented typed metadata.
-- [ ] Summary entries do not resolve task classes, deserialize contexts, or retain a collection, backend, backend resolver, operation delegate, or other mutation dependency.
+- [ ] Summary entries do not resolve task classes, deserialize contexts, or retain a collection, backend, operation delegate, or other mutation dependency.
 - [ ] Nil enumeration is empty and creates no persistence or background activity.
 - [ ] Public APIs and private helpers have the required YARD documentation.
 
 ## Verification
 
 - Add focused specs for the accessor, collection, passive summary entries, Disk snapshot primitive, reverse-line reader, and Nil traversal behavior.
-- Start with `Rage::Deferred`'s `@__backend` unset. Cover lazy collection creation, memoized wrapper identity, and lazy no-block Enumerator creation. Verify that collection access and each valid unadvanced Enumerator leave `@__backend` unset, do not construct Disk, and do not open or create Disk files. Every no-block `each` call returns a distinct normal Ruby Enumerator, while block-based traversal executions are independent.
-- Cover both initialization orders. If the queue resolves `Rage::Deferred.__backend` first, the collection traversal must use that exact object. If collection traversal resolves it first, the queue must later use that exact object. Verify that only one configured backend instance is constructed in either order.
-- Verify that every invalid `batch_size` raises `ArgumentError` immediately from `each`. The call must return no Enumerator, leave `@__backend` unset, invoke no backend resolver or storage method, and open no descriptor.
-- Cover newest-first order and batch boundaries. Instrument decoding to prove that stopping before a later batch does not decode records that belong only to that older batch.
+- Start with `Rage::Deferred`'s `@__backend` unset. Cover collection creation, memoized wrapper identity, and lazy no-block Enumerator creation. Verify that collection access resolves the configured backend once and passes that exact object directly to `DeadTasks`. Collection access and each valid unadvanced Enumerator must not invoke DLQ traversal, open a snapshot descriptor, or scan, decode, or preload DLQ records. Every no-block `each` call returns a distinct normal Ruby Enumerator, while block-based traversal executions are independent.
+- Cover both initialization orders. If the queue resolves `Rage::Deferred.__backend` first, the collection must receive that exact object. If collection access resolves it first, the queue must later use that exact object. Verify that only one configured backend instance is constructed in either order.
+- Verify that `each` has no public batch-size option and that its unadvanced no-block form invokes no DLQ traversal method and opens no snapshot descriptor.
+- Cover oldest-first order and internal batch boundaries. Prove specifically that `first(20)` returns the oldest 20 logical tasks by winning-record position.
 - Cover multiple physical records for one ID. The newest valid record wins. Verify fallback to the next older fully valid record when a newer record has a malformed frame, invalid CRC, unreadable top-level Marshal payload, decoded non-Hash, missing field, wrong field type, or inner/outer ID mismatch.
 - Verify that the opaque context is type-checked as a String but not deserialized. Cover invalid backtrace contents and all summary-field types.
 - Create earlier complete records and an incomplete tail. Start the snapshot, then call task 01's real add path so it repairs the tail and appends. Verify that the traversal yields only the original complete logical records, in unchanged order.
 - Through backend or storage hooks, append and run rename-based compaction between yields. Verify that remaining snapshot entries are not skipped, duplicated, reordered, or replaced.
-- Use a representative many-batch fixture. Verify incremental `seen_ids` growth, the separate decoded-payload bound, and the absence of an all-offset or all-payload cache.
+- Use a representative many-batch fixture. Verify the complete O(distinct valid IDs) winner index, the separate internal decoded-payload bound, and the absence of an all-payload cache. Do not assert the private numeric batch size.
+- Instrument traversal to prove that even `first(1)` completes the reverse selection scan before its first yield, while early termination prevents re-reading and decoding later selected winners beyond the current internal batch.
 - Verify that Disk holds the permanent lock only while opening the file and locating the boundary. It must release the lock before record validation and the first yield. It must preserve task 01's lock-timeout behavior for competing operations.
 - Verify automatic descriptor cleanup after full exhaustion, block `break`, another non-local exit, and an exception.
 - Verify cleanup when terminal Enumerable operations, including `find`, `first`, and `take`, stop early and unwind `DeadTasks#each`.
 - Verify that a fully exhausted no-block Enumerator runs normal `ensure` cleanup. Verify that the returned Enumerator has no Rage-specific public `close` API.
 - Exercise standard Ruby mixed internal and external Enumerator behavior. Do not assert a shared cursor, snapshot, descriptor, lookahead, or exhaustion state across those consumption modes.
 - Verify that separate top-level Enumerable methods and separate collection `each` calls create separate traversal executions. Start one execution, append a record, and then start another; their independently timed snapshots may differ as documented.
-- For corrupt records and an incomplete tail, verify silent skipping and that early termination does not inspect older untouched records.
+- For corrupt records and an incomplete tail, verify silent skipping without diagnostic output and confirm that early termination still completes the full selection scan required for duplicate resolution and oldest-first order.
 - Cover two overlapping external Enumerators and nested `each`, including interleaved advancement from same-process Fibers. Verify that exhaustion, `break`, and an exception in one collection traversal do not affect the other.
 - Demonstrate the documented partial external/lazy limitation without depending on collection timing: a suspended execution may still own its descriptor and keep an unlinked inode alive. Do not force garbage collection or test finalizer timing. Exhaust or otherwise normally unwind every test traversal before teardown.
 - Inject `Rage::Deferred::DeadTasksLockTimeout` during first advancement. Also inject representative `SystemCallError` failures during open, reverse read/seek, and descriptor cleanup.

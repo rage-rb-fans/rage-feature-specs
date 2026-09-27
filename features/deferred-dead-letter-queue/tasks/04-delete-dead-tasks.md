@@ -30,7 +30,7 @@ This task depends on task 02 and implements REQ-11 plus the deletion and enumera
   dead_tasks.delete(ids)
   ```
 
-  The accumulator retains O(selected IDs) Strings rather than all `DeadTask` entries; this is additional to task 02's incremental set of fully valid IDs already encountered during traversal. Disk performs one locked compaction for the normalized bulk call. Entries can become stale between selection and deletion, so missing IDs retain the documented non-error semantics.
+  The accumulator retains O(selected IDs) Strings rather than all `DeadTask` entries; this is additional to task 02's complete winner index. Disk performs one locked compaction for the normalized bulk call. Entries can become stale between selection and deletion, so missing IDs retain the documented non-error semantics.
 - A stale entry object can delete only its exact logical ID. If another worker/process already removed it, return `false`; never delete a different or newly unrelated entry.
 - Propagate `DeadTasksLockTimeout` and filesystem errors from the backend. Do not report success when task 01 cannot confirm durable replacement; preserve its documented uncertainty when rename succeeds but directory `fsync` fails.
 - Concurrent deletions remain serialized by task 01's permanent lock. Overlapping callers may split the successful count according to lock order, but together remove only the requested logical IDs without resurrecting records or losing unrelated entries.
