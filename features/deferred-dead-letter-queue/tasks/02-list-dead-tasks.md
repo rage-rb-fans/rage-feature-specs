@@ -238,6 +238,7 @@ second.next # snapshot B starts later and may include the appended task
 
 ## Implementation constraints
 
+- Follows ADR-001.
 - Do not change task 01's record format, filename version, write ordering, retention, or crash guarantees.
 - Keep task 01 marked done and do not rewrite its specification or result.
 - Do not add public exact-ID lookup or context/argument readers. Those belong to task 03.
@@ -261,28 +262,28 @@ second.next # snapshot B starts later and may include the appended task
 
 ## Acceptance criteria
 
-- [ ] `Rage::Deferred.dead_tasks` is memoized. Repeated calls return the same shared public collection object, initialized with the shared memoized backend obtained through `Rage::Deferred.__backend`.
-- [ ] The collection retains that backend object directly. The collection and queue use one identical memoized backend object regardless of which one initializes it first.
-- [ ] The shared collection retains no traversal state. Every no-block `each` call returns a distinct normal Ruby Enumerator. Each block traversal and top-level Enumerable operation owns a private traversal execution.
-- [ ] Obtaining the collection may resolve and initialize the backend. Obtaining the collection or a valid unadvanced Enumerator does not open a DLQ snapshot descriptor or scan, decode, or preload DLQ records.
-- [ ] `DeadTasks#each` exposes no public batch-size option. Decoded winner payloads are held in a fixed internally bounded batch whose numeric size is not part of the public contract.
-- [ ] The no-block return value is a normal lazy Ruby Enumerator. It has standard Ruby 3.3 behavior and no Rage-specific `close`, shared-cursor, lookahead, generation, or mixed-consumer lifecycle.
-- [ ] Separate top-level Enumerable operations and separate collection `each` calls use separate traversal executions and snapshots. Mixed internal and external consumption of one returned Enumerator follows standard Ruby behavior without Rage synchronization.
-- [ ] Overlapping collection Enumerators, nested traversal, and same-process Fiber-interleaved traversal remain independent. Exhaustion, `break`, or an exception in one collection traversal does not affect another.
-- [ ] Snapshot boundaries are established independently on first advancement, so a later-starting Enumerator may include an append that an already-started Enumerator excludes.
-- [ ] Under the permanent lock, Disk setup captures an open descriptor and the last complete-record boundary. It does not scan or decode all earlier complete records. It releases the lock before validation or yielding.
-- [ ] Before its first yield, traversal scans all complete snapshot records backwards, selects the newest fully valid record for every ID into a complete winner index, and then yields the winners oldest-first by selected physical position. It holds at most one internally bounded decoded payload batch in addition to that index.
-- [ ] For duplicate IDs, the newest fully valid record is yielded. A newer malformed, CRC-invalid, Marshal-unreadable, non-Hash, schema-invalid, or inner/outer-ID-mismatched record does not hide an older fully valid record.
-- [ ] Missing or wrongly typed required fields and an incomplete tail are silently skipped without payload disclosure or diagnostic output. On Disk, the outer framed ID is consistently used as the public and logical ID.
-- [ ] A normally continuing snapshot is unchanged by append, task 01 torn-tail repair plus append, or rename-based compaction performed through backend or storage hooks between yields.
-- [ ] `first(20)` returns the oldest 20 logical tasks by winning-record position. It performs the complete selection scan before yielding, but does not re-read and decode later winners beyond work already performed for its current internal batch.
-- [ ] Enumeration closes snapshot resources on exhaustion, block `break`, non-local exit, exception, and normally unwound terminal Enumerable early exit. It never holds the dead-task lock while decoding or running user code.
-- [ ] A partially consumed external or lazy traversal may retain its descriptor and an old unlinked inode until that execution exhausts, unwinds, or is garbage-collected. Rage offers no deterministic public cancellation API in this task.
-- [ ] Snapshot-acquisition lock timeout and open/read/seek/cleanup errors propagate unchanged from the lazy operation that encounters them. Cleanup runs through `ensure` and does not mask an existing exception. When cleanup is the only failure, its original storage exception propagates.
-- [ ] Summary entries are passive, read-only values and expose the documented typed metadata.
-- [ ] Summary entries do not resolve task classes, deserialize contexts, or retain a collection, backend, operation delegate, or other mutation dependency.
-- [ ] Nil enumeration is empty and creates no persistence or background activity.
-- [ ] Public APIs and private helpers have the required YARD documentation.
+- [ ] TC-01 (core, AC-03) `Rage::Deferred.dead_tasks` is memoized. Repeated calls return the same shared public collection object, initialized with the shared memoized backend obtained through `Rage::Deferred.__backend`.
+- [ ] TC-02 (core, AC-03) The collection retains that backend object directly. The collection and queue use one identical memoized backend object regardless of which one initializes it first.
+- [ ] TC-03 (core, AC-03) The shared collection retains no traversal state. Every no-block `each` call returns a distinct normal Ruby Enumerator. Each block traversal and top-level Enumerable operation owns a private traversal execution.
+- [ ] TC-04 (core, AC-03) Obtaining the collection may resolve and initialize the backend. Obtaining the collection or a valid unadvanced Enumerator does not open a DLQ snapshot descriptor or scan, decode, or preload DLQ records.
+- [ ] TC-05 (edge, AC-03) `DeadTasks#each` exposes no public batch-size option. Decoded winner payloads are held in a fixed internally bounded batch whose numeric size is not part of the public contract.
+- [ ] TC-06 (edge, AC-03) The no-block return value is a normal lazy Ruby Enumerator. It has standard Ruby 3.3 behavior and no Rage-specific `close`, shared-cursor, lookahead, generation, or mixed-consumer lifecycle.
+- [ ] TC-07 (edge, AC-03) Separate top-level Enumerable operations and separate collection `each` calls use separate traversal executions and snapshots. Mixed internal and external consumption of one returned Enumerator follows standard Ruby behavior without Rage synchronization.
+- [ ] TC-08 (edge, AC-03) Overlapping collection Enumerators, nested traversal, and same-process Fiber-interleaved traversal remain independent. Exhaustion, `break`, or an exception in one collection traversal does not affect another.
+- [ ] TC-09 (edge, AC-03) Snapshot boundaries are established independently on first advancement, so a later-starting Enumerator may include an append that an already-started Enumerator excludes.
+- [ ] TC-10 (core, AC-03) Under the permanent lock, Disk setup captures an open descriptor and the last complete-record boundary. It does not scan or decode all earlier complete records. It releases the lock before validation or yielding.
+- [ ] TC-11 (core, AC-03) Before its first yield, traversal scans all complete snapshot records backwards, selects the newest fully valid record for every ID into a complete winner index, and then yields the winners oldest-first by selected physical position. It holds at most one internally bounded decoded payload batch in addition to that index.
+- [ ] TC-12 (core, AC-07) For duplicate IDs, the newest fully valid record is yielded. A newer malformed, CRC-invalid, Marshal-unreadable, non-Hash, schema-invalid, or inner/outer-ID-mismatched record does not hide an older fully valid record.
+- [ ] TC-13 (core, AC-07) Missing or wrongly typed required fields and an incomplete tail are silently skipped without payload disclosure or diagnostic output. On Disk, the outer framed ID is consistently used as the public and logical ID.
+- [ ] TC-14 (core, AC-03) A normally continuing snapshot is unchanged by append, task 01 torn-tail repair plus append, or rename-based compaction performed through backend or storage hooks between yields.
+- [ ] TC-15 (core, AC-03) `first(20)` returns the oldest 20 logical tasks by winning-record position. It performs the complete selection scan before yielding, but does not re-read and decode later winners beyond work already performed for its current internal batch.
+- [ ] TC-16 (core, AC-03) Enumeration closes snapshot resources on exhaustion, block `break`, non-local exit, exception, and normally unwound terminal Enumerable early exit. It never holds the dead-task lock while decoding or running user code.
+- [ ] TC-17 (edge, AC-03) A partially consumed external or lazy traversal may retain its descriptor and an old unlinked inode until that execution exhausts, unwinds, or is garbage-collected. Rage offers no deterministic public cancellation API in this task.
+- [ ] TC-18 (core, AC-07) Snapshot-acquisition lock timeout and open/read/seek/cleanup errors propagate unchanged from the lazy operation that encounters them. Cleanup runs through `ensure` and does not mask an existing exception. When cleanup is the only failure, its original storage exception propagates.
+- [ ] TC-19 (core, AC-03) Summary entries are passive, read-only values and expose the documented typed metadata.
+- [ ] TC-20 (edge, AC-03) Summary entries do not resolve task classes, deserialize contexts, or retain a collection, backend, operation delegate, or other mutation dependency.
+- [ ] TC-21 (core, AC-02) Nil enumeration is empty and creates no persistence or background activity.
+- [ ] TC-22 (edge) Public APIs and private helpers have the required YARD documentation.
 
 ## Verification
 
