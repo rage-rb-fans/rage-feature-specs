@@ -1,5 +1,5 @@
 ---
-status: accepted
+status: proposed
 ---
 
 # ADR-001: Shape of the public surface
