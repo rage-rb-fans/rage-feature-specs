@@ -12,6 +12,8 @@ Support exact-ID lookup and detailed inspection of a dead task, including final 
 
 Task 02 establishes `Rage::Deferred.dead_tasks`, the `DeadTasks` collection, stable enumeration, and passive read-only `DeadTask` summary entries. Task 01's record keeps exception metadata outside an opaque marshaled execution context, so most inspection can remain available when the task class or context can no longer be loaded.
 
+Task 02 removes task 01's private eager `find_dead_task` facade methods and `Disk::DeadTasksStorage#find` because the forward eager implementation does not provide this task's fixed-boundary reverse lookup, full schema validation, invalid-newer fallback, or cleanup guarantees. This task introduces the private exact-lookup capability anew for Disk and Nil; it does not inherit an existing lookup implementation.
+
 This task depends on task 02 and owns REQ-08; REQ-09's exception-detail readers; REQ-10; REQ-17's exact-lookup validation, silent corruption handling, and invalid-newer fallback; REQ-18; the detailed-inspection and exact-lookup parts of REQ-19 and REQ-20; REQ-26's exact-lookup error/cleanup behavior; REQ-28 and REQ-29; the exact-lookup portion of AC-03; AC-04; and the lookup/inspection portions of AC-07 and AC-11. It does not own Task 02's enumeration lifecycle or summary-only listing fields. Task 05 consumes the decoded arguments and error model for retry. Follow [ADR-001](../adr/001-public-dead-task-object-model.md).
 
 ## Requirements
@@ -28,7 +30,7 @@ This task depends on task 02 and owns REQ-08; REQ-09's exception-detail readers;
 - Disk lookup silently skips invalid physical records and excludes an incomplete tail. It does not inspect older untouched records after finding a fully valid match and emits no logging or terminal output for recoverable corruption.
 - Invalid public input raises `TypeError` before backend access. Snapshot-acquisition `Rage::Deferred::DeadTasksLockTimeout` and filesystem open/read/seek failures are operational failures rather than skipped items and propagate unchanged from `find_by_id`; do not translate them into the dedicated context-deserialization error or another generic public error.
 - Exact lookup releases locks and descriptors through `ensure`. Cleanup must not mask an exception already being propagated. If storage cleanup is the only failure, its original exception propagates instead of being silently suppressed. This does not change the dedicated error translation required later when a valid entry's opaque execution context cannot be deserialized.
-- `DeadTasks` validates the public ID and delegates exact lookup through a private backend capability. It must not inspect the backend class or contain Disk-, Nil-, or database-specific branches. The existing private backend method name `find_dead_task(id)` may remain.
+- Introduce a private exact-lookup capability on the Disk and Nil backend facades when adding `DeadTasks#find_by_id`. The capability may be named `find_dead_task(id)`, but it is a new task-03 contract and implementation rather than preservation of task 01's removed method. `DeadTasks` validates the public ID and delegates through this capability without inspecting the backend class or containing Disk-, Nil-, or database-specific branches.
 - Exact lookup is independent of every active enumeration session. Calling `find_by_id` while an Enumerator is paused must not advance, close, rewind, or replace that Enumerator's snapshot, and the lookup must not reuse its descriptor, cursor, winner index, or decoded batch.
 - Disk, Nil, and future adapters must produce the same observable `find_by_id` result and the same public `DeadTask` entry shape. Disk may reverse-scan a fixed complete-record view, Nil returns `nil` without side effects, and a future database adapter may use an indexed query. Do not promise equal time or I/O complexity across adapters.
 - Add shared backend-contract examples for exact lookup. Exercise them for Disk and Nil in this feature and structure them so a future adapter can reuse them. Do not add a database backend in this task.
@@ -41,7 +43,7 @@ This task depends on task 02 and owns REQ-08; REQ-09's exception-detail readers;
 
 After `DeadTasks#find_by_id` validates its String argument, delegate to the backend's private exact-lookup capability and wrap the backend-neutral internal record in the public model from task 02. Keep this path polymorphic: `DeadTasks` calls the capability and does not branch on backend class.
 
-Disk uses task 02's frame/schema validator and authoritative outer-ID rule. It may traverse backwards from a fixed complete-record boundary and stop at the first fully valid record whose outer ID matches. It must continue past newer invalid duplicates rather than relying on task 01's current framing-only lookup behavior. Records older than that match remain untouched. Nil returns `nil`. A future database adapter can satisfy the same private capability with an indexed query; this task neither defines its schema nor implements it.
+Disk implements the new private capability using task 02's frame/schema validator and authoritative outer-ID rule. It may traverse backwards from a fixed complete-record boundary and stop at the first fully valid record whose outer ID matches. It must continue past newer invalid duplicates; task 01's removed forward eager lookup must not be restored. Records older than that match remain untouched. Nil implements the new capability by returning `nil`. A future database adapter can satisfy the same private capability with an indexed query; this task neither defines its schema nor implements it.
 
 Exception fields are copied directly from the normalized record. Context decoding is isolated behind the entry and cached only after successful validation; a failed decode remains retryable after application code or constants are restored.
 
@@ -57,6 +59,7 @@ Do not couple basic inspection to task constant resolution. Decode only the cont
 - Do not delete or compact a record merely because its context cannot be decoded.
 - Do not add mutation methods or mutation wiring; task 04 owns their introduction.
 - Do not branch on backend class in `DeadTasks` or promise backend-independent exact-lookup complexity.
+- Do not restore or delegate to task 01's removed eager `DeadTasksStorage#find`; implement the task-03 exact-lookup semantics as a new private capability.
 - Do not scan past a valid match or emit logging or terminal output merely to report recoverable corruption.
 - Do not rescue and translate lookup lock-timeout or filesystem failures. Context-deserialization translation applies only after a fully valid top-level record has been returned.
 - Do not add a database backend.
@@ -66,7 +69,7 @@ Do not couple basic inspection to task constant resolution. Decode only the cont
 
 - [ ] `find_by_id` accepts only an exact String and returns the newest fully valid matching entry or `nil`, with fallback past invalid newer duplicates.
 - [ ] Inherited `find` and `detect` retain standard Enumerable predicate, optional fallback callable, and no-block behavior without any exact-ID overload.
-- [ ] Disk and Nil satisfy reusable shared exact-lookup contract examples and expose identical public result/entry shapes without backend-class branching in `DeadTasks`.
+- [ ] Task 03 introduces a private exact-lookup capability for Disk and Nil from scratch. Both satisfy reusable shared exact-lookup contract examples and expose identical public result/entry shapes without backend-class branching in `DeadTasks`.
 - [ ] `find_by_id` can run while another traversal is paused without changing that traversal's snapshot or lifecycle.
 - [ ] Exception class, message, and backtrace remain inspectable without resolving the task class or decoding the context.
 - [ ] Args/kwargs decode lazily with correct positional/keyword fidelity and cannot be used to mutate stored replay input.
@@ -82,7 +85,7 @@ Do not couple basic inspection to task constant resolution. Decode only the cont
 - Verify inherited `find` and `detect` select entries with a block predicate, return the optional fallback callable's value only when no entry matches, do not invoke that fallback after a match, and return their standard Enumerator forms when called without a block.
 - Add shared backend-contract examples for existing, missing, duplicate, invalid-newer-duplicate, result-shape, and Nil-style empty lookup behavior. Apply the relevant shared examples to Disk and Nil and make them reusable by future adapters.
 - Cover exact lookup that finds a match after invalid items, returns `nil` after invalid items, stops before older invalid records, and encounters an operational failure after invalid items. Verify recoverable corruption is skipped silently and does not interact with a paused enumeration.
-- Verify `DeadTasks#find_by_id` delegates through the private backend capability without testing backend class identity. A lightweight conforming backend double may prove the collection needs no adapter-specific branch; do not implement a database adapter.
+- Verify `DeadTasks#find_by_id` delegates through the new private backend capability without testing backend class identity or depending on task 01's removed lookup implementation. A lightweight conforming backend double may prove the collection needs no adapter-specific branch; do not implement a database adapter.
 - Pause an external Enumerator after its first entry, call `find_by_id`, and resume the Enumerator. Verify the lookup uses an independent backend operation and does not advance, close, rewind, or replace the paused snapshot.
 - Cover task classes that are loadable, renamed, removed, anonymous, or replaced by non-Class constants without breaking basic inspection.
 - Cover empty, positional-only, keyword-only, and mixed arguments under Ruby 3.3; verify lazy decode and defensive/frozen values.

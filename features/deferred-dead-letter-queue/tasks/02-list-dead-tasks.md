@@ -31,6 +31,8 @@ Task 02 does not own REQ-08 or REQ-10. It also does not own the exact-lookup par
 
 Task 02 defines the stable traversal behavior that later entry actions rely on. It does not add `delete`, `retry`, or their private mutation wiring.
 
+Task 01 introduced eager private `list_dead_tasks` and `find_dead_task` backend primitives. Task 02's argument-free `each_dead_task` traversal supersedes the list primitive, while the existing forward eager lookup does not satisfy task 03's exact-lookup contract. This task removes both obsolete Disk and Nil facade methods and their `Disk::DeadTasksStorage#list` and `#find` implementations. It retains task 01's `remove_dead_tasks` primitive for later mutation tasks; task 03 introduces a correct private exact-lookup capability from scratch.
+
 Task 03 adds exact-ID inspection through `find_by_id` and lazy context decoding. It keeps the inherited Enumerable `find`. Task 04 adds deletion and the first private entry-action wiring. Task 05 extends that wiring for retry.
 
 Follow [ADR-001](../adr/001-public-dead-task-object-model.md).
@@ -155,6 +157,9 @@ For no-block and lazy iteration:
 - Listing and summary readers must not deserialize the opaque execution context.
 - With the Nil backend, the accessor returns the same public collection type and enumeration yields nothing.
 - Nil enumeration must not create storage files or background work.
+- Treat argument-free `each_dead_task` as the private backend listing contract. Remove `list_dead_tasks` from the Disk and Nil backend facades, remove `Disk::DeadTasksStorage#list`, and remove their implementation documentation and eager-list coverage. Update remaining storage specs that used `list_dead_tasks` only to inspect state so they use `each_dead_task` or direct storage evidence as appropriate.
+- Remove the current `find_dead_task` methods from the Disk and Nil backend facades and `Disk::DeadTasksStorage#find`, together with their implementation documentation and tests. Task 03 introduces a conforming private exact-lookup capability when it adds public `find_by_id`; this task must not preserve the current eager forward lookup as an interim backend contract.
+- Keep `remove_dead_tasks` on the Disk and Nil backend facades. Its behavior and the underlying `remove` storage primitive remain unchanged for tasks 04 and 05.
 - Keep storage and snapshot helpers private. Use YARD `@private` where Ruby visibility cannot express that boundary.
 - Document all of the following:
   - the accessor, collection, and passive summary readers;
@@ -239,7 +244,7 @@ second.next # snapshot B starts later and may include the appended task
 ## Implementation constraints
 
 - Do not change task 01's record format, filename version, write ordering, retention, or crash guarantees.
-- Keep task 01 marked done and do not rewrite its specification or result.
+- Keep task 01 marked done and do not rewrite its historical specification or result. Task 02 supersedes only its eager private listing and exact-lookup primitives.
 - Do not add public exact-ID lookup or context/argument readers. Those belong to task 03.
 - Do not add `delete`, `retry`, or mutation wiring. Those belong to tasks 04 and 05.
 - Do not inject or retain any mutation-capable object in a `DeadTask`.
@@ -282,6 +287,7 @@ second.next # snapshot B starts later and may include the appended task
 - [ ] Summary entries are passive, read-only values and expose the documented typed metadata.
 - [ ] Summary entries do not resolve task classes, deserialize contexts, or retain a collection, backend, operation delegate, or other mutation dependency.
 - [ ] Nil enumeration is empty and creates no persistence or background activity.
+- [ ] Argument-free `each_dead_task` is the only private dead-task backend read primitive after this task. Disk and Nil no longer define `list_dead_tasks` or `find_dead_task`, `Disk::DeadTasksStorage` no longer defines `list` or `find`, and implementation documentation no longer advertises those obsolete eager methods. The existing `remove_dead_tasks` facade method and its storage behavior remain available and unchanged.
 - [ ] Public APIs and private helpers have the required YARD documentation.
 
 ## Verification
@@ -309,6 +315,7 @@ second.next # snapshot B starts later and may include the appended task
 - Inject `Rage::Deferred::DeadTasksLockTimeout` during first advancement. Also inject representative `SystemCallError` failures during open, reverse read/seek, and descriptor cleanup.
 - Verify that each error propagates unchanged from the operation that encounters it and that acquired resources are released. Cleanup must not mask an active traversal or user-block exception. A storage cleanup exception must propagate when it is the only failure.
 - Cover missing task classes, immutable/defensive summary values, absence of task-02 mutation methods or dependencies, silent skipped-record handling, and empty Nil enumeration.
+- Remove eager `list_dead_tasks`/`DeadTasksStorage#list` and current `find_dead_task`/`DeadTasksStorage#find` coverage. Replace state assertions that used the eager list facade only as a test helper with `each_dead_task` or direct storage evidence. Verify that Disk, Nil, and `Disk::DeadTasksStorage` no longer expose the removed read methods while `remove_dead_tasks` continues to work.
 - Run `bundle exec rspec spec/deferred/deferred_spec.rb spec/deferred/backends/disk_spec.rb` plus the new focused listing specs.
 - Run the broader `bundle exec rspec spec/deferred` and RuboCop for changed Ruby/spec files.
 
