@@ -1,5 +1,5 @@
 ---
-status: ready-for-development
+status: done
 ---
 
 # Streaming read in the backend
@@ -121,7 +121,7 @@ Private methods:
 
 `each_entry`, step by step:
 
-1. `storage.rewind`. While `(position = storage.pos) < limit`: `entry = storage.gets(chomp: true)` (stop if it is `nil`); `id = entry_id(entry)`; if `id` is `nil`, add one to the count of corrupted lines and go on; otherwise `yield id, entry, position`.
+1. `storage.rewind`, `position = 0`. While `position < limit`: `entry = storage.gets` (stop if it is `nil`); `next_position = position + entry.bytesize`; `entry.chomp!`; `id = entry_id(entry)`; if `id` is `nil`, add one to the count of corrupted lines; otherwise `yield id, entry, position`; then `position = next_position`. The position is counted from the bytes read and never asked from the file: `IO#pos` and `IO#seek` drop the read buffer, so one of them per entry makes every entry cost a read of a full buffer.
 2. After the loop, if the count is not zero, print the `WARNING:` line.
 
 Why the read is a fixed set without a lock: the bytes before `limit` never change. `add` appends, and its `repair_torn_tail` cuts only bytes after `limit`, because `limit` is the end of the last complete entry. `remove` writes a new file and renames it over the live path, which leaves the opened file complete. `limit` is at an entry boundary, so `gets` never returns a part of an entry.
@@ -143,9 +143,14 @@ def each
     positions = index.values
     index = nil
 
+    next_position = nil
+
     positions.each do |position|
-      storage.seek(position)
-      entry = storage.gets(chomp: true)
+      # a seek drops the read buffer, so it is made only to jump over a skipped entry
+      storage.seek(position) if position != next_position
+      entry = storage.gets
+      next_position = position + entry.bytesize
+      entry.chomp!
       record = decode_entry(entry)
 
       yield record if record
@@ -218,7 +223,7 @@ No new kind of call, but one more read. `find` reads the dead-tasks file once on
 
 Tests to add, in `spec/deferred/backends/disk_spec.rb`, inside `describe "dead tasks"`:
 
-- `describe "#each_dead_task"` — TC-01 to TC-05, TC-08 to TC-11, and TC-13. For TC-02, a second example with an interrupted append at the end of the file and a shorter entry added inside the block. For TC-09, also the `WARNING:` line. For TC-01, the keys of a yielded Hash and that `context` is a String.
+- `describe "#each_dead_task"` — TC-01 to TC-05, TC-08 to TC-11, and TC-13. For TC-02, a second example with an interrupted append at the end of the file and a shorter entry added inside the block, which also checks that nothing is printed. For TC-10, a second example whose final entry is complete and valid except for its newline. For TC-09, also the `WARNING:` line. For TC-01, the keys of a yielded Hash and that `context` is a String.
 - `describe "#find_dead_task"` — TC-06 and TC-12, and one example that a stored id returns its record Hash.
 - TC-07 — `spec/deferred/backends/nil_spec.rb` (a new file).
 
@@ -230,6 +235,90 @@ Commands:
 
 - `bundle exec rspec spec/deferred/backends`
 - `bundle exec rubocop lib/rage/deferred/backends spec/deferred/backends`
+
+**Core tests**
+
+Existing examples changed: none. Criteria kept whole: none.
+TC-06 and TC-07 are left for the edge step by the engineer's decision: the test of TC-06 passes before the code, and the test of TC-07 passes against an empty `Backends::Nil#each_dead_task`.
+
+<!-- rage-flow:core-tests begin — written by a script, do not edit -->
+- TC-01: spec/deferred/backends/disk_spec.rb — "Rage::Deferred::Backends::Disk dead tasks #each_dead_task yields the record Hashes of three dead tasks, oldest first" — red: assertion
+- TC-01: spec/deferred/backends/disk_spec.rb — "Rage::Deferred::Backends::Disk dead tasks #each_dead_task yields Hashes with the contract keys and an undecoded context String" — red: assertion
+- TC-02: spec/deferred/backends/disk_spec.rb — "Rage::Deferred::Backends::Disk dead tasks #each_dead_task does not yield a task added inside the block" — red: assertion
+- TC-03: spec/deferred/backends/disk_spec.rb — "Rage::Deferred::Backends::Disk dead tasks #each_dead_task still yields a task removed inside the block before it was yielded" — red: assertion
+- TC-04: spec/deferred/backends/disk_spec.rb — "Rage::Deferred::Backends::Disk dead tasks #each_dead_task lets remove_dead_tasks inside the block return the removed count" — red: assertion
+- TC-05: spec/deferred/backends/disk_spec.rb — "Rage::Deferred::Backends::Disk dead tasks #each_dead_task yields only the last written record of a repeated id" — red: assertion
+- TC-06: left for the edge step: find_dead_task keeps its behavior, so the test passes before the code
+- TC-07: left for the edge step: the test passes against an empty Backends::Nil#each_dead_task
+<!-- rage-flow:core-tests end -->
+
+**Edge tests**
+
+Existing examples changed: none.
+Ran (first round): `bundle exec rspec spec/deferred/backends` — 61 examples, 0 failures, none skipped or pending.
+Ran (review round, 2026-10-02): `bundle exec rspec spec/deferred/backends/disk_spec.rb` — 61 examples, 0 failures, none skipped or pending. All 11 Disk examples below ran, together with the 6 core examples and the 44 existing ones. `spec/deferred/backends/nil_spec.rb` was not changed and not run again in this round; `rage-flow revert-check` ran its example at the base.
+Not run: none. No example of this task needs external services.
+The second example of TC-06 ("returns the record Hash of a stored id") is the one Verification plans without a criterion; it is listed under TC-06 because the map needs an ID.
+TC-08 and the first example of TC-11 fail at the base only because `each_dead_task` does not exist there: `raise_error` reports the `NoMethodError` as a failed expectation. This is the same case as "not proven (NoMethodError)".
+What the tests cannot show: the memory limits (checked in review, as Verification says), and a second process that adds or removes a dead task while the block runs — the tests do both from the same process. A dead task added during the first pass of `each_dead_task` cannot be tested without a stub on a private method that the Design does not name, so no example does it: an add inside the block always comes after the first pass.
+Review round: the TC-02 example with the interrupted append now also checks that nothing is printed (the half line is not counted as corrupted), and TC-10 has a second example. Both, and the first TC-10 example, fail when the read stops at the file size and not at the last newline; this was checked with a scratch patch loaded with `rspec -r`, not in the checkout. At the base they stay "not proven (NoMethodError)".
+Review findings handled: F2, F4, F6
+Review mode changed: spec/deferred/backends/disk_spec.rb; code changed: no
+
+<!-- rage-flow:edge-tests begin — written by a script, do not edit -->
+- TC-02: spec/deferred/backends/disk_spec.rb — "Rage::Deferred::Backends::Disk dead tasks #each_dead_task does not yield a shorter task written over an incomplete final entry inside the block" — revert: not proven (NoMethodError)
+- TC-06: spec/deferred/backends/disk_spec.rb — "Rage::Deferred::Backends::Disk dead tasks #find_dead_task returns the last written record of a repeated id" — revert: passes without the change — old behavior is kept: find_dead_task keeps its return value, only its memory use changes
+- TC-06: spec/deferred/backends/disk_spec.rb — "Rage::Deferred::Backends::Disk dead tasks #find_dead_task returns the record Hash of a stored id" — revert: passes without the change — old behavior is kept: find_dead_task keeps its return value, only its memory use changes
+- TC-07: spec/deferred/backends/nil_spec.rb — "Rage::Deferred::Backends::Nil#each_dead_task never calls the block" — revert: not proven (NoMethodError)
+- TC-08: spec/deferred/backends/disk_spec.rb — "Rage::Deferred::Backends::Disk dead tasks #each_dead_task raises before the block is called when the store cannot be locked" — revert: fails
+- TC-09: spec/deferred/backends/disk_spec.rb — "Rage::Deferred::Backends::Disk dead tasks #each_dead_task skips a line that fails its checksum and yields the records around it" — revert: not proven (NoMethodError)
+- TC-10: spec/deferred/backends/disk_spec.rb — "Rage::Deferred::Backends::Disk dead tasks #each_dead_task yields nothing for a final entry without a newline" — revert: not proven (NoMethodError)
+- TC-10: spec/deferred/backends/disk_spec.rb — "Rage::Deferred::Backends::Disk dead tasks #each_dead_task yields nothing for a final entry that is complete except for its newline" — revert: not proven (NoMethodError)
+- TC-11: spec/deferred/backends/disk_spec.rb — "Rage::Deferred::Backends::Disk dead tasks #each_dead_task when the block does not run to the end closes the file and passes the error on when the block raises" — revert: fails
+- TC-11: spec/deferred/backends/disk_spec.rb — "Rage::Deferred::Backends::Disk dead tasks #each_dead_task when the block does not run to the end closes the file when the block ends the call with break" — revert: not proven (NoMethodError)
+- TC-12: spec/deferred/backends/disk_spec.rb — "Rage::Deferred::Backends::Disk dead tasks #find_dead_task returns nil for an id that is not in the store" — revert: passes without the change — old behavior is kept: find_dead_task keeps its return value, only its memory use changes
+- TC-13: spec/deferred/backends/disk_spec.rb — "Rage::Deferred::Backends::Disk dead tasks #each_dead_task yields a repeated id at the place of its last written record" — revert: not proven (NoMethodError)
+<!-- rage-flow:edge-tests end -->
+
+**Review outcome**
+
+Second full review on 2026-10-02, after `task:build` handled the three test findings of the first one. Reviewers: A (runtime correctness), B (contract, cost, surface, and tests), C (code against the Design); none skipped. A and C returned no findings. Reviewed tree 5cc683e, base b8c9a6c. The finding numbers below are those of this review.
+Report (a local file): `.workflow/evidence/deferred-dead-tasks-api/01-streaming-read-review.md`.
+First full review (same day, reviewed tree 7b2dddf): it applied two fixes to the read cost — the second pass of `each` seeks only to jump over a skipped entry, and `each_entry` counts the position from the bytes read and no longer calls `storage.pos`; the Design was patched to match. It rejected a finding about the contract header text, which is the text the approved Design names. Its three test findings (TC-02, TC-10, and the map entry of TC-07) were handled by `task:build`.
+Applied: F3 — the class comment of `DeadTasksStorage` now says that `each` and `find` read after the lock is released. Comment text only; the Design does not change.
+Rejected: F2 — `each_dead_task` without a block differs between Disk (`LocalJumpError` at the first yield) and Nil (`nil`); the Requirements say that a call without a block is not supported.
+Unmet: none
+- Decided: F1 — rejected by the engineer on 2026-10-02; the gap is accepted. No example adds a dead task during the first pass of `each_dead_task`, so no example shows directly that a shorter entry written over the half line is not yielded. TC-02 as written (an add inside the block) is proven, and the rejected `limit = storage.size` is guarded: with a scratch patch that uses it, three examples fail (two on the `WARNING:` line, the TC-10 example with a complete entry on the yielded ids).
+Examples that did not run: none. All 18 mapped examples ran and passed; none was skipped or pending, and no example of this task needs external services.
+Checks: `bundle exec rubocop` — no offenses. `bundle exec yardoc --fail-on-warning` — one warning outside this task, `lib/rage/sse/message.rb` ("Undocumentable Struct assignment to Rage::SSE::Message"); not fixed.
+
+<!-- rage-flow:final-run begin — written by a script, do not edit -->
+Ran: bundle exec rspec spec/deferred/backends/disk_spec.rb spec/deferred/backends/nil_spec.rb — exit 0
+Ran: bundle exec rspec spec/deferred/backends — exit 0
+Ran: bundle exec rubocop lib/rage/deferred/backends spec/deferred/backends — exit 0
+- TC-01: spec/deferred/backends/disk_spec.rb — "Rage::Deferred::Backends::Disk dead tasks #each_dead_task yields the record Hashes of three dead tasks, oldest first" — passed
+- TC-01: spec/deferred/backends/disk_spec.rb — "Rage::Deferred::Backends::Disk dead tasks #each_dead_task yields Hashes with the contract keys and an undecoded context String" — passed
+- TC-02: spec/deferred/backends/disk_spec.rb — "Rage::Deferred::Backends::Disk dead tasks #each_dead_task does not yield a task added inside the block" — passed
+- TC-02: spec/deferred/backends/disk_spec.rb — "Rage::Deferred::Backends::Disk dead tasks #each_dead_task does not yield a shorter task written over an incomplete final entry inside the block" — passed
+- TC-03: spec/deferred/backends/disk_spec.rb — "Rage::Deferred::Backends::Disk dead tasks #each_dead_task still yields a task removed inside the block before it was yielded" — passed
+- TC-04: spec/deferred/backends/disk_spec.rb — "Rage::Deferred::Backends::Disk dead tasks #each_dead_task lets remove_dead_tasks inside the block return the removed count" — passed
+- TC-05: spec/deferred/backends/disk_spec.rb — "Rage::Deferred::Backends::Disk dead tasks #each_dead_task yields only the last written record of a repeated id" — passed
+- TC-06: left for the edge step: find_dead_task keeps its behavior, so the test passes before the code
+- TC-06: spec/deferred/backends/disk_spec.rb — "Rage::Deferred::Backends::Disk dead tasks #find_dead_task returns the last written record of a repeated id" — passed
+- TC-06: spec/deferred/backends/disk_spec.rb — "Rage::Deferred::Backends::Disk dead tasks #find_dead_task returns the record Hash of a stored id" — passed
+- TC-07: left for the edge step: the test passes against an empty Backends::Nil#each_dead_task
+- TC-07: spec/deferred/backends/nil_spec.rb — "Rage::Deferred::Backends::Nil#each_dead_task never calls the block" — passed
+- TC-08: spec/deferred/backends/disk_spec.rb — "Rage::Deferred::Backends::Disk dead tasks #each_dead_task raises before the block is called when the store cannot be locked" — passed
+- TC-09: spec/deferred/backends/disk_spec.rb — "Rage::Deferred::Backends::Disk dead tasks #each_dead_task skips a line that fails its checksum and yields the records around it" — passed
+- TC-10: spec/deferred/backends/disk_spec.rb — "Rage::Deferred::Backends::Disk dead tasks #each_dead_task yields nothing for a final entry without a newline" — passed
+- TC-10: spec/deferred/backends/disk_spec.rb — "Rage::Deferred::Backends::Disk dead tasks #each_dead_task yields nothing for a final entry that is complete except for its newline" — passed
+- TC-11: spec/deferred/backends/disk_spec.rb — "Rage::Deferred::Backends::Disk dead tasks #each_dead_task when the block does not run to the end closes the file and passes the error on when the block raises" — passed
+- TC-11: spec/deferred/backends/disk_spec.rb — "Rage::Deferred::Backends::Disk dead tasks #each_dead_task when the block does not run to the end closes the file when the block ends the call with break" — passed
+- TC-12: spec/deferred/backends/disk_spec.rb — "Rage::Deferred::Backends::Disk dead tasks #find_dead_task returns nil for an id that is not in the store" — passed
+- TC-13: spec/deferred/backends/disk_spec.rb — "Rage::Deferred::Backends::Disk dead tasks #each_dead_task yields a repeated id at the place of its last written record" — passed
+Open: none
+Tested: HEAD b8c9a6c, files digest d9de859 (lib/rage/deferred/backends/disk.rb, lib/rage/deferred/backends/nil.rb, spec/deferred/backends/disk_spec.rb, spec/deferred/backends/nil_spec.rb)
+<!-- rage-flow:final-run end -->
 
 ## Result
 

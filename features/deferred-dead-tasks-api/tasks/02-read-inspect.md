@@ -1,5 +1,5 @@
 ---
-status: draft
+status: ready-for-development
 ---
 
 # Read and inspect dead tasks
@@ -38,8 +38,8 @@ task.kwargs            # => Hash, {} when the task had no keyword arguments
 - `DeadTasks` includes `Enumerable`, so `map`, `select`, `count`, `to_a` and the others work through `each`.
 - **Order.** "Oldest first" is the order in which the tasks became dead. The backend's `each_dead_task` yields in this order; `each` does not reorder.
 - **Snapshot.** The set of records is fixed when `each` starts. A record added to the store after that is not yielded by this call; a record removed after that is still yielded. Every new call of `each` reads the store again.
-- **Memory.** `each` and `find_by_id` never build a list of all records. `each` holds one record at a time and yields it before the next one is read.
-- **Repeated ids.** If the store holds two records with the same task id, `each` yields one `DeadTask` for it, built from the older record, and `find_by_id` returns the same one.
+- **Memory.** `each` and `find_by_id` never build a list of all records. `each` holds one record at a time and yields it before the next one is read. While the backend prepares the read, it also holds one id and one position per stored record (task 01); this does not grow with the size of the records.
+- **Repeated ids.** If the store holds two records with the same task id, `each` yields one `DeadTask` for it, built from the newest record (the later failure), at the place of that record in the order, and `find_by_id` returns the same one.
 - **No lock while yielding.** The store's lock is released before the first yield, so the block may read the store again.
 - **`args` and `kwargs`** are decoded from the stored context on first read, not when the record is yielded. For a task enqueued through `Rage::Deferred.wrap`, `task_class` is the wrapper class and `args` starts with the wrapped object and the method name, as stored.
 
@@ -48,6 +48,7 @@ task.kwargs            # => Hash, {} when the task had no keyword arguments
 - **The lock cannot be taken.** `each` and `find_by_id` raise `Rage::Deferred::DeadTasksLockTimeout`, as the backend does. Nothing was yielded and nothing changed.
 - **A class of the app no longer exists.** `each` and `find_by_id` still return the record, and every reader except `args` and `kwargs` works. `args` and `kwargs` raise the error that decoding raises (`ArgumentError` from `Marshal.load` for a missing class). The error is raised on every read; a failed decode is not remembered.
 - **A corrupted record in the store.** The backend skips it and prints its warning, as today; the record is not yielded.
+- **A record that passes its checksum but cannot be decoded.** The backend prints its `ERROR:` line and skips the record (task 01): `each` does not yield it, and `find_by_id` returns `nil` for its id. For a repeated id only the newest record is tried.
 - **The block of `each` raises or uses `break`.** The call ends there, and the backend ends its read (ADR-003). This task writes nothing, so nothing is left half-done.
 - **Called twice.** Every operation is a read and gives the same result until the store changes.
 - **`config.deferred.backend = nil`.** `each` yields nothing and `find_by_id` returns `nil`. No error is raised.
@@ -133,11 +134,11 @@ end
 
 New call sites on the reactor, all through the existing store:
 
-- `each_dead_task` in `each`: one read of the whole dead-tasks file, record by record, plus one `Marshal.load` per record. The lock is taken with `LOCK_NB` and a scheduler-aware `sleep` only to fix the set of records; it is not held during the read or while the block runs.
-- `find_dead_task` in `find_by_id`: a read of the file up to the record it looks for.
+- `each_dead_task` in `each`: two reads of the whole dead-tasks file (ADR-003). The first runs in one piece before the first record is yielded; the second goes record by record, with one `Marshal.load` per yielded record. The lock is taken with `LOCK_NB` and a scheduler-aware `sleep` only to fix the set of records; it is not held during the reads or while the block runs.
+- `find_dead_task` in `find_by_id`: one read of the whole file, because the newest record with the id can be anywhere in it, and one `Marshal.load` of that record.
 - `Marshal.load` of one context in `args` / `kwargs`: CPU only, the size of one task's arguments.
 
-No new lock, wait, `fsync`, thread, or process call. The cost of `each` and `find_by_id` grows with the size of the store, and the YARD text of both says so.
+No new lock, wait, `fsync`, thread, or process call. The cost of `each` and `find_by_id` grows with the size of the store, and the YARD text of both says so; the text of `each` also says that it reads the store twice.
 
 ### Boot and request cost
 
@@ -192,53 +193,6 @@ Commands:
 - `bundle exec rspec spec/deferred/dead_tasks_spec.rb spec/deferred/dead_task_spec.rb spec/deferred/deferred_spec.rb`
 - `bundle exec rubocop lib/rage/deferred spec/deferred`
 - `bundle exec yardoc --fail-on-warning`
-
-**Core tests**
-
-No existing example was changed.
-
-Kept whole: TC-04 — parts: id; task_class; attempts; enqueued_at; failed_at; exception_class; exception_message; backtrace
-Kept whole: TC-06 — parts: args; kwargs
-Kept whole: TC-07 — parts: args; kwargs
-
-<!-- rage-flow:core-tests begin — written by a script, do not edit -->
-- TC-01: spec/deferred/deferred_spec.rb — "Rage::Deferred.dead_tasks yields a Rage::Deferred::DeadTask with the id of a stored dead task" — red: assertion
-- TC-02: spec/deferred/dead_tasks_spec.rb — "Rage::Deferred::DeadTasks #each yields one DeadTask per stored record, oldest first" — red: assertion
-- TC-04.1: spec/deferred/dead_task_spec.rb — "Rage::Deferred::DeadTask returns the stored id, class name, attempts, times, exception and backtrace" — red: assertion
-- TC-04.2: spec/deferred/dead_task_spec.rb — "Rage::Deferred::DeadTask returns the stored id, class name, attempts, times, exception and backtrace" — red: assertion
-- TC-04.3: spec/deferred/dead_task_spec.rb — "Rage::Deferred::DeadTask returns the stored id, class name, attempts, times, exception and backtrace" — red: assertion
-- TC-04.4: spec/deferred/dead_task_spec.rb — "Rage::Deferred::DeadTask returns the stored id, class name, attempts, times, exception and backtrace" — red: assertion
-- TC-04.5: spec/deferred/dead_task_spec.rb — "Rage::Deferred::DeadTask returns the stored id, class name, attempts, times, exception and backtrace" — red: assertion
-- TC-04.6: spec/deferred/dead_task_spec.rb — "Rage::Deferred::DeadTask returns the stored id, class name, attempts, times, exception and backtrace" — red: assertion
-- TC-04.7: spec/deferred/dead_task_spec.rb — "Rage::Deferred::DeadTask returns the stored id, class name, attempts, times, exception and backtrace" — red: assertion
-- TC-04.8: spec/deferred/dead_task_spec.rb — "Rage::Deferred::DeadTask returns the stored id, class name, attempts, times, exception and backtrace" — red: assertion
-- TC-06.1: spec/deferred/dead_task_spec.rb — "Rage::Deferred::DeadTask #args and #kwargs return the arguments the task was enqueued with" — red: assertion
-- TC-06.2: spec/deferred/dead_task_spec.rb — "Rage::Deferred::DeadTask #args and #kwargs return the arguments the task was enqueued with" — red: assertion
-- TC-08: spec/deferred/dead_tasks_spec.rb — "Rage::Deferred::DeadTasks #each yields a DeadTask for a record whose task class no longer exists" — red: assertion
-- TC-12: spec/deferred/dead_tasks_spec.rb — "Rage::Deferred::DeadTasks #each with the Nil backend yields nothing and returns the collection" — red: assertion
-- TC-15: spec/deferred/dead_tasks_spec.rb — "Rage::Deferred::DeadTasks #each lets the block call find_by_id" — red: assertion
-<!-- rage-flow:core-tests end -->
-
-**Edge tests**
-
-No existing example was changed.
-
-Ran: all 8 edge examples, in `bundle exec rspec spec/deferred/dead_tasks_spec.rb spec/deferred/dead_task_spec.rb spec/deferred/deferred_spec.rb` (21 examples, 0 failures, none skipped or pending). Not run: none.
-
-The revert results of TC-03, TC-05, TC-07, TC-09, TC-13, and TC-16 are "not proven" because `Rage::Deferred::DeadTasks` and `Rage::Deferred.dead_tasks` do not exist at the base. TC-14 fails at the base for the same reason: the example expects `DeadTasksLockTimeout` and gets a `NameError`.
-
-The two new test files still describe their class by its name as a string. Replacing the string with the class changes the full description of the examples under `#each` and `#args and #kwargs`, and the `core-tests` block names them by that description.
-
-<!-- rage-flow:edge-tests begin — written by a script, do not edit -->
-- TC-03: spec/deferred/dead_tasks_spec.rb — "Rage::Deferred::DeadTasks #each returns an Enumerator over the same records without a block" — revert: not proven (NameError)
-- TC-05: spec/deferred/dead_tasks_spec.rb — "Rage::Deferred::DeadTasks #find_by_id returns nil for an id that is not in the store" — revert: not proven (NameError)
-- TC-07.1: spec/deferred/dead_task_spec.rb — "Rage::Deferred::DeadTask #args and #kwargs return empty collections for a task enqueued without arguments" — revert: not proven (NameError)
-- TC-07.2: spec/deferred/dead_task_spec.rb — "Rage::Deferred::DeadTask #args and #kwargs return empty collections for a task enqueued without arguments" — revert: not proven (NameError)
-- TC-09: spec/deferred/dead_task_spec.rb — "Rage::Deferred::DeadTask #args raises ArgumentError on every read if a class of the stored context no longer exists" — revert: not proven (NameError)
-- TC-13: spec/deferred/dead_tasks_spec.rb — "Rage::Deferred::DeadTasks #find_by_id with the Nil backend returns nil" — revert: not proven (NameError)
-- TC-14: spec/deferred/dead_tasks_spec.rb — "Rage::Deferred::DeadTasks #each raises DeadTasksLockTimeout if the lock of the store cannot be taken" — revert: fails
-- TC-16: spec/deferred/deferred_spec.rb — "Rage::Deferred.dead_tasks returns the same object on every call" — revert: not proven (NoMethodError)
-<!-- rage-flow:edge-tests end -->
 
 ## Result
 
