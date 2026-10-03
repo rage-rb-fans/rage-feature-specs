@@ -1,5 +1,5 @@
 ---
-status: ready-for-development
+status: draft
 ---
 
 # Retry dead tasks
@@ -16,8 +16,8 @@ This task depends on both tasks 03 and 04. It implements REQ-12 through REQ-16, 
 
 ## Requirements
 
-- Add `DeadTask#retry` and `DeadTasks#retry(id)` according to ADR-001. Extend and reuse task 04's private action delegate with `retry(id)`; do not add a second delegate or pass the collection, raw backend, snapshot, or another mutation dependency separately. The concrete delegate may remain the creating `DeadTasks` collection, but callers cannot observe or replace it. The entry method delegates with its exact ID. The collection method accepts one String ID, returns `false` when no current valid record matches, and returns `true` after successful enqueue/removal handling.
-- Re-read the newest fully valid logical record for the entry's exact ID at mutation time through task 03's `find_by_id` behavior. Disk applies task 02's authoritative outer-ID and validity rules inside its backend capability; other adapters apply their equivalent integrity rules. A stale entry must not replay record data that has been removed or replaced outside its snapshot.
+- Add `DeadTask#retry` and `DeadTasks#retry(id)` according to ADR-001. Extend and reuse task 04's private action delegate with `retry(id)`; do not add a second delegate or pass the collection, raw backend, snapshot, or another mutation dependency separately. The concrete delegate may remain the creating `DeadTasks` collection, but callers cannot observe or replace it. The entry method delegates with its exact ID. The collection method accepts one String ID, returns `false` when no current frame-valid record matches, and returns `true` after successful enqueue/removal handling.
+- Re-read the newest frame-valid record for the entry's exact authoritative outer ID at mutation time through task 03's `find_by_id` behavior. Disk selects the newest matching frame after checking only newline completeness inside the snapshot boundary, frame structure and expected operation, CRC, and a non-empty authoritative outer ID; it does not apply a shared top-level payload schema/type validator before selection. A selected top-level Marshal decoding failure or natural failure while constructing the documented public entry propagates without fallback to an older duplicate. Other adapters apply their storage contracts while preserving the same observable lookup result and public entry shape. A stale entry must not replay record data that has been removed or replaced outside its snapshot.
 - Resolve the exact stored class name without `eval`. Reject a missing constant, a non-Class constant, or a class not including `Rage::Deferred::Task` with a dedicated retry error that identifies the dead-task ID and preserves the record.
 - Decode the original positional and keyword arguments using task 03. Context corruption, missing referenced constants, or an incompatible context layout raises the documented dead-task deserialization/retry error and leaves the record intact.
 - Invoke the resolved task class's normal public `enqueue(*args, **kwargs)` path. Create a fresh task ID and context, reset attempts, and run current enqueue middleware and enqueue telemetry. Do not reconstruct the old exception or preserve the old task ID, delay, scheduled time, logger context, or user context.
@@ -35,7 +35,7 @@ This task depends on both tasks 03 and 04. It implements REQ-12 through REQ-16, 
 
 ## Design
 
-Find the latest current entry through task 03's `find_by_id`, resolve/validate its task class, decode defensive args/kwargs, and call the public task enqueue method. Normal return from enqueue is the commit point for attempting backend removal under task 01's guarantees. Translate public dead-task failures while preserving their causes and the distinction between pre-enqueue failure and post-enqueue cleanup failure.
+Find the newest frame-valid current entry through task 03's `find_by_id`, resolve/validate its task class, decode defensive args/kwargs, and call the public task enqueue method. Disk lookup selects by the authoritative outer ID before top-level payload decoding; a selected decoding or entry-construction failure propagates without retrying an older duplicate. Normal return from enqueue is the commit point for attempting backend removal under task 01's guarantees. Translate public dead-task failures while preserving their causes and the distinction between pre-enqueue failure and post-enqueue cleanup failure.
 
 Extend the private action protocol introduced by task 04 from `delete(id)` to `delete(id)` plus `retry(id)`. Preserve the same injected delegate and private entry-construction path so inspection, deletion, and retry do not create competing entry representations.
 
@@ -58,6 +58,7 @@ Place the non-running guard at the top of `Queue#schedule`, not only in the dead
 ## Acceptance criteria
 
 - [ ] Missing/stale/Nil retry returns `false`; a valid retry returns `true` after the documented enqueue/removal sequence.
+- [ ] Retry re-reads the newest frame-valid record for the exact authoritative outer ID without shared top-level schema/type validation. A selected payload decoding or entry-shape failure propagates and never falls back to an older duplicate.
 - [ ] `DeadTask#retry` reuses task 04's private delegate and exact-ID wiring without introducing another entry dependency or changing existing deletion behavior.
 - [ ] Retry resolves and validates the task class without `eval` and preserves the dead record on class or context failure.
 - [ ] Retry uses original positional/keyword arguments through a fresh normal enqueue with reset ID, attempts, context, middleware, and telemetry.
@@ -70,7 +71,7 @@ Place the non-running guard at the top of `Queue#schedule`, not only in the dead
 
 ## Verification
 
-- Add focused collection/entry specs for success, missing/stale/Nil records, class resolution, invalid task constants, context errors, and exact return/error types.
+- Add focused collection/entry specs for success, missing/stale/Nil records, class resolution, invalid task constants, context errors, and exact return/error types. Cover a newer frame-invalid duplicate falling back to an older frame-valid record, and a newer frame-valid duplicate whose selected payload cannot be decoded or constructed propagating without older fallback.
 - Verify the task-04 delegate gains `retry(id)` without replacing its identity or breaking `DeadTask#delete`, task-03 readers, or task-02 traversal.
 - Cover positional-only, keyword-only, mixed, and empty arguments under Ruby 3.3, plus fresh ID/attempt/context state and enqueue middleware/telemetry execution.
 - Cover pending-store, middleware, backpressure, schedule, and dead-store removal failures, including records left in one or both stores and preserved exception causes.
