@@ -1,5 +1,5 @@
 ---
-status: draft
+status: ready-for-development
 ---
 
 # Inspect a dead task
