@@ -34,6 +34,8 @@ Adopt Option C and continue to defer Option D, subject to user acceptance of thi
 
 Retry is a fresh enqueue of the original positional and keyword arguments under the current application code and configuration. It does not preserve the original logger/user context, task ID, attempt count, delay, or exception object. The dead record is removed only after enqueue succeeds.
 
+For the current storage version, retry obtains those arguments through task 03's lazy frozen Marshal decode and `Rage::Deferred::Context.get_args`/`.get_kwargs`. Because Rage is the sole writer of this version's opaque contexts, the MVP does not add duplicate Array shape, minimum-length, or extracted Array/Hash type validation. Actual Marshal or accessor exceptions use task 03's dedicated ID-and-cause error and leave the dead record intact. A future incompatible context layout requires a storage-version bump and compatibility guardrails.
+
 `Queue#schedule` first checks `Iodine.running?` and performs no scheduling work when false. Retry outside a running server writes the pending WAL, emits a clear restart-required warning, and then removes the dead record after persistence succeeds. Periodic orphan-WAL adoption belongs to a future feature.
 
 ## Consequences
@@ -43,4 +45,4 @@ Retry is a fresh enqueue of the original positional and keyword arguments under 
 - Retry has at-least-once failure behavior. A crash or dead-store deletion failure after pending persistence may leave both records; repeating retry can enqueue duplicate work.
 - Concurrent retry/delete operations require operator coordination and do not provide cancellation or exactly-once guarantees.
 - Out-of-process retry is durable but not immediate. Operators must restart the Rage server before the orphaned WAL is adopted.
-- The public API does not depend on the private serialized context layout beyond a dedicated decoder for args/kwargs.
+- The public API depends on the private serialized context layout only through `Rage::Deferred::Context` accessors used by the dedicated args/kwargs decoder; proactive compatibility validation is deferred to a future storage-version change.
