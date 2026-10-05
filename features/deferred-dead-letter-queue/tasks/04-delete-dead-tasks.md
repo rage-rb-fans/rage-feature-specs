@@ -41,7 +41,7 @@ This task depends on task 02 and implements REQ-11 plus the deletion and enumera
 
 Normalize and validate public IDs in `DeadTasks`, call `backend.remove_dead_tasks` once, and translate the single-entry count to a Boolean for `DeadTask#delete`. Extend task 02's centralized private entry construction to inject the deletion delegate only when this task adds `DeadTask#delete`. `DeadTasks` may itself serve as that private delegate; no separate actions class is required. Keep the mechanism narrow but extensible so task 05 can reuse it for `retry(id)` rather than introducing a second, incompatible entry dependency. Do not reimplement compaction in the public layer.
 
-Task 02's open snapshot descriptor continues reading backwards from its fixed complete-record boundary on the original inode after a delete renames the live path. Mutation inside enumeration therefore cannot replace or skip remaining snapshot records. The iterator, not deletion, owns descriptor cleanup.
+Task 02's open snapshot descriptor continues reading its fixed complete-record view on the original inode after a delete renames the live path. Mutation inside enumeration therefore cannot replace or skip remaining snapshot records. The iterator, not deletion, owns descriptor cleanup.
 
 ## Implementation constraints
 
