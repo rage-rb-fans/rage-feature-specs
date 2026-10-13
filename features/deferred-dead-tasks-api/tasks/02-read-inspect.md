@@ -10,7 +10,7 @@ Give application code a documented, read-only way to see dead Deferred tasks: en
 
 ## Context
 
-Since Rage 1.28.0 the backend stores dead tasks, but only the internal backend contract can read them, and it returns the storage Hash with a `Marshal` blob inside. Task 01 gives the backend `each_dead_task`, which yields one record at a time. This task adds, on top of it, the public entry point and the two public classes that the later tasks of the feature build on: `find_by_ids`, `first`, and `last` (task 03), delete (task 04), and replay (task 05).
+Since Rage 1.28.0 the backend stores dead tasks, but only the internal backend contract can read them, and it returns the storage Hash with a `Marshal` blob inside. Task 01 gives the backend `each_dead_task`, which yields one record at a time. This task adds, on top of it, the public entry point and the two public classes that the later tasks of the feature build on: delete and replay (task 03), and `find_by_ids`, `first`, and `last` (task 04).
 
 ## Requirements
 
@@ -55,8 +55,8 @@ task.kwargs            # => Hash, {} when the task had no keyword arguments
 
 ### Not in this task
 
-- `DeadTasks#find_by_ids` and the limited form of `DeadTasks` it returns (task 03). In this task a `DeadTasks` always stands for the whole store.
-- `DeadTasks#first` and `DeadTasks#last`. Until task 03, `first` is `Enumerable`'s and `first(n)` returns an Array; `last` does not exist. Tasks 02 and 03 ship in the same release.
+- `DeadTasks#find_by_ids` and the limited form of `DeadTasks` it returns (task 04). In this task a `DeadTasks` always stands for the whole store.
+- `DeadTasks#first` and `DeadTasks#last`. Until task 04, `first` is `Enumerable`'s and `first(n)` returns an Array; `last` does not exist. Task 04 is optional; if it is built, it ships in the same release as task 02.
 - `DeadTask#delete`, `DeadTask#replay`, and the grouping of removals inside `each`.
 - Any backend change. `each_dead_task` and the contract header are task 01.
 - Behavior in a process that is not a running server (task 06).
@@ -150,11 +150,11 @@ Two more small files are loaded when `Rage::Deferred` is first used; nothing is 
 - Follows ADR-003.
 - This task changes no backend file and adds nothing to the backend contract; it uses `each_dead_task` and `find_dead_task` as task 01 leaves them.
 - `each` must not call `list_dead_tasks` or collect the records into an Array before it yields: that brings back the memory use ADR-003 removes.
-- `each` yields only from inside the block of `each_dead_task`, which holds no lock of the store while it yields: tasks 04 and 05 call the store from inside the block.
+- `each` yields only from inside the block of `each_dead_task`, which holds no lock of the store while it yields: task 03 calls the store from inside the block.
 - `DeadTask` never returns the backend's Hash or the context blob, and no reader other than `args` and `kwargs` may decode the context.
 - The decoding error of `args` and `kwargs` is passed on unchanged. Rejected: a new public error class for it. No requirement needs one, and it would be one more released name.
-- `DeadTasks` takes only the backend. The limited form (an id index) is added by task 03, which is the first to need it.
-- `DeadTask` takes only the record. A reference to its collection is added by task 04, which is the first to need it.
+- `DeadTasks` takes only the backend. The limited form (an id index) is added by task 04, which is the first to need it.
+- `DeadTask` takes only the record. A reference to its collection is added by task 03, which is the first to need it.
 - No change to an existing method signature, config key, or telemetry span. `Rage::Deferred::DeadTasksLockTimeout` keeps its name and meaning.
 - `# frozen_string_literal: true` in both new files. `initialize` of both classes is tagged `# @private`; internal ivars are `@__`-prefixed.
 - Every user-facing method has YARD `@param` / `@return` / `@example` tags. Nothing newer than Ruby 3.3.0; no new gem.

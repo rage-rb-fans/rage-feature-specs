@@ -21,6 +21,8 @@ dead_tasks.each { |task| task.delete if task.task_class == "SendWelcomeEmail" }
 dead_tasks.each                                   # => Enumerator
 
 task = dead_tasks.find_by_id("1759312800-4242-7") # => Rage::Deferred::DeadTask or nil
+
+# Optional (task 04): collections limited to some of the records
 dead_tasks.find_by_ids([id_1, id_2])              # => Rage::Deferred::DeadTasks, limited to these ids
 dead_tasks.find_by_ids([id_1, id_2]).each(&:delete)
 
@@ -46,15 +48,19 @@ task.delete                                       # remove this record
 
 `each` is the way to read the whole store; there is no `list`, no `limit`, and no `offset`. `DeadTask#replay` and `DeadTask#delete` are the only writes, and each acts on one record. No public write method takes a list of ids or a batch size.
 
-`find_by_ids` takes an Array of ids and returns a `DeadTasks` collection limited to the dead tasks that have them. It is the same class as `Rage::Deferred.dead_tasks`, so it is `Enumerable`, yields oldest first, and its `each` groups removals in the same way. Ids that are not in the store are skipped, and an id given twice yields one record. `to_a` gives a plain Array.
+`replay` and `delete` remove their record from the store at once, with one rewrite of the store per call. This is the same on the record that `find_by_id` returns and inside the block of `each`, so `dead_tasks.each(&:replay)` works and costs one rewrite per record.
+
+Two parts of this API are optional, and the feature is complete without them: `find_by_ids`, `first(n)`, and `last(n)` (task 04), and the grouping of the removals made inside one `each` call into one rewrite (task 05). No other task depends on either of them. Whichever of the two is built second makes the grouping work on the limited collections.
+
+`find_by_ids` takes an Array of ids and returns a `DeadTasks` collection limited to the dead tasks that have them. It is the same class as `Rage::Deferred.dead_tasks`, so it is `Enumerable`, yields oldest first, and, when task 05 is built, its `each` groups removals in the same way. Ids that are not in the store are skipped, and an id given twice yields one record. `to_a` gives a plain Array.
 
 `first` and `last` mean first and last in time, whatever order the backend returns its records in: `first(20)` is the 20 tasks that became dead first (the oldest) and `last(20)` the 20 that became dead last (the newest). `each` yields in the same order, oldest first, so `first` and `last` always agree with `each`, `to_a`, and the other `Enumerable` methods.
 
-`first(n)` and `last(n)` return a `DeadTasks` collection limited to those records, not an Array, so `first(20).each(&:delete)` and `last(20).each(&:replay)` are grouped. Without an argument, `first` and `last` return one `DeadTask` or `nil`. Both are defined on `DeadTasks`: `Enumerable#first(n)` returns an Array, and `Enumerable` has no `last`.
+`first(n)` and `last(n)` return a `DeadTasks` collection limited to those records, not an Array, so that `first(20).each(&:delete)` and `last(20).each(&:replay)` can be grouped (task 05). Without an argument, `first` and `last` return one `DeadTask` or `nil`. Both are defined on `DeadTasks`: `Enumerable#first(n)` returns an Array, and `Enumerable` has no `last`.
 
 The lookup by id is named `find_by_id` because `Enumerable#find` takes a block; a `find(id)` would replace it and break `dead_tasks.find { ... }`.
 
-The four operations the request names map to: read = `each`, inspect = `find_by_id` and `find_by_ids` plus the readers of `DeadTask`, delete = `DeadTask#delete`, replay = `DeadTask#replay`.
+The four operations the request names map to: read = `each`, inspect = `find_by_id` plus the readers of `DeadTask` (and `find_by_ids`, when task 04 is built), delete = `DeadTask#delete`, replay = `DeadTask#replay`.
 
 ### Constraints
 
@@ -65,9 +71,10 @@ Each one names what breaks when it is ignored.
 - **The on-disk format does not change.** `DeadTasksStorage::STORAGE_VERSION` stays `"0"`. Records written by Rage 1.28.0 must be listed, deleted, and replayed; a format change makes dead tasks that already exist in production unreadable.
 - **The public objects hide the storage record.** `DeadTask` exposes named readers, never the backend's Hash and never the `Marshal` blob of the context. Returning the Hash makes the storage format and the layout of `Rage::Deferred::Context` a public API that can no longer change.
 - **`each` never yields while the store's lock is held.** The set of records is fixed when `each` starts, the lock is released, and only then are records read and yielded one by one (ADR-003). The lock is not re-entrant for a fiber: a `replay` or `delete` called inside the block would wait for a lock its own fiber holds and end in `DeadTasksLockTimeout`, so `each(&:replay)` could never work. A record that another worker removes after the snapshot is still yielded.
-- **`find_by_ids` reads the store once.** It is built on `each_dead_task` and skips the records with other ids, whatever the number of ids. Calling `find_dead_task` per id reads the whole file once per id on the reactor, which is the cost this method exists to avoid; a new backend method for it would grow the contract.
+- **Optional (task 04): `find_by_ids` reads the store once.** It is built on `each_dead_task` and skips the records with other ids, whatever the number of ids. Calling `find_dead_task` per id reads the whole file once per id on the reactor, which is the cost this method exists to avoid; a new backend method for it would grow the contract.
 - **Batching of writes is internal to the framework.** No public write method accepts a list of ids, a batch size, or any other batching argument. Removing one record rewrites the whole store (write, `fsync`, rename, directory `fsync`), so N single removals cost N rewrites on the reactor. A public batching argument would make one store's cost model a contract for every later backend.
-- **Removals made inside one `each` call are grouped into one rewrite.** `DeadTask#replay` and `DeadTask#delete` called inside the block of `DeadTasks#each` collect their removals, and `each` applies them with one `remove_dead_tasks` call when it ends. This holds for every `DeadTasks` collection, so `find_by_ids(ids).each(&:delete)` and `first(20).each(&:delete)` are one rewrite too; `find_by_ids`, `first(n)`, and `last(n)` must not return a plain Array, whose `each` the framework cannot group. It applies them however it ends: normal return, `break`, or an error raised in the block. Removals that are dropped on `break` or on an error leave replayed tasks in the dead-tasks store, where the next `each(&:replay)` runs them a second time. Until `each` ends, a record deleted in the block is still visible to other readers. A `replay` or `delete` called outside an `each` block (on the one record that `find_by_id`, `first`, or `last` returns, or on the Array that `select` or `to_a` returns) removes its record at once, with one rewrite per call.
+- **A `replay` or `delete` removes its record at once.** Each call makes its own `remove_dead_tasks` call, one rewrite of the store, wherever it is made: on the one record that `find_by_id` returns, on the Array that `select` or `to_a` returns, and inside the block of `DeadTasks#each`. For `replay`, the removal (step 4 of ADR-002) runs right after the enqueue of the same record. `each(&:replay)` and `each(&:delete)` work this way, with one rewrite per record, and the YARD text of `replay` and `delete` must say what that costs. A removal that is held back for later, with no grouping to apply it, leaves a replayed task in the dead-tasks store, where the next `replay` runs it a second time.
+- **Optional (task 05): removals made inside one `each` call are grouped into one rewrite.** When task 05 is built, `DeadTask#replay` and `DeadTask#delete` called inside the block of `DeadTasks#each` collect their removals, and `each` applies them with one `remove_dead_tasks` call when it ends. This holds for every `DeadTasks` collection, so with task 04 `find_by_ids(ids).each(&:delete)` and `first(20).each(&:delete)` are one rewrite too; `find_by_ids`, `first(n)`, and `last(n)` must not return a plain Array, whose `each` the framework cannot group. It applies them however it ends: normal return, `break`, or an error raised in the block. Removals that are dropped on `break` or on an error leave replayed tasks in the dead-tasks store, where the next `each(&:replay)` runs them a second time. Until `each` ends, a record deleted in the block is still visible to other readers; without task 05 it is removed at once, so this task changes what other readers see. A `replay` or `delete` called outside an `each` block (on the one record that `find_by_id`, `first`, or `last` returns, or on the Array that `select` or `to_a` returns) still removes its record at once, with one rewrite per call.
 - **`each`, `find_by_id`, and `find_by_ids` never decode the context.** The arguments are decoded only when `args` or `kwargs` is read. A task class or an argument class that was removed from the app would otherwise make the whole list raise, and the list is the tool for finding exactly those records.
 - **Replay keeps the task in at least one store at every moment.** See [ADR-002](adr/002-replay-semantics.md): the task is written to the pending-task WAL first and removed from the dead-tasks store second. The opposite order loses the task when the process dies between the two steps.
 - **Replay uses the regular enqueue path.** See [ADR-002](adr/002-replay-semantics.md): the task class's `enqueue` is called with the stored arguments, so the `deferred.task.enqueue` span and the enqueue middleware run as for a task the app enqueues. A second, replay-only path would hide replays from the app's telemetry handlers and middleware, and would have to be kept equal to the regular one by hand.
@@ -82,7 +89,7 @@ Each one names what breaks when it is ignored.
 ## Non-goals
 
 - Retention: automatic cleanup, a size limit, or expiry of dead tasks.
-- Counting, filtering, or searching dead tasks inside the store (by class, by error, by time). The `Enumerable` methods (`count`, `select`, `first`) and `last` work, but each of them reads the whole store; `first(20)` is not cheaper than `each`.
+- Counting, filtering, or searching dead tasks inside the store (by class, by error, by time). The `Enumerable` methods (`count`, `select`, `first`) work, and so does `last` when task 04 is built, but each of them reads the whole store; `first(20)` is not cheaper than `each`.
 - A CLI command, a Rake task, or a web page on top of the API.
 - Automatic replay, and changing the arguments of a task before replay.
 - Pagination (`limit`, `offset`) and faster reads: an index, a cursor, or a read that covers only part of the file.
@@ -91,6 +98,8 @@ Each one names what breaks when it is ignored.
 - Protection against a second replay of the same dead task. In this feature, a record that two workers replay at the same time, or that is replayed again after a failed removal, is enqueued twice (see ADR-002). An idempotency key for replay is planned as later work; whether a second replay is not written to the WAL or is written but not run is not decided yet.
 
 ## Acceptance criteria
+
+AC-18, AC-19, and AC-20 (task 04) and AC-23 (task 05) belong to optional tasks; the feature is complete without them.
 
 - [ ] AC-01: When a Deferred task has used up its retries, `Rage::Deferred.dead_tasks.each` yields a `Rage::Deferred::DeadTask` with that task's id.
 - [ ] AC-03: When `find_by_id` is called with the id of a stored record, the returned `DeadTask` exposes the task class name, attempts, enqueue time, failure time, exception class, exception message, and backtrace.
@@ -110,21 +119,22 @@ Each one names what breaks when it is ignored.
 - [ ] AC-20: When `last(n)` is called, the returned collection yields the `n` tasks that became dead last.
 - [ ] AC-21: If a dead task is added to the store while the block of `each` runs, that `each` call does not yield it.
 - [ ] AC-22: If the store holds two records with the same task id, `each` yields one `DeadTask` for that id.
+- [ ] AC-23: When `delete` or `replay` is called on several dead tasks inside the block of one `each` call, their records are removed with one rewrite of the store, when that `each` call ends.
 
 ## Tasks
 
 - [x] [01 — Streaming read in the backend](tasks/01-streaming-read.md)
   Adds `each_dead_task` to the backend contract, in Disk and Nil, as ADR-003 defines it, and makes `find_dead_task` in Disk stop loading the whole store. Writes the keys of a dead-task record into the contract header. No public API: the boundary with task 02 is the backend contract. Covers no feature criterion by itself; task 02 proves AC-21 and AC-22 through the public API on top of it.
 - [x] [02 — Read and inspect dead tasks](tasks/02-read-inspect.md)
-  Leaves the app able to enumerate and find dead tasks through `Rage::Deferred.dead_tasks` (`each`, `find_by_id`) and to read a `Rage::Deferred::DeadTask`. Built on `each_dead_task` from task 01. Read-only: stops before anything that changes the dead-tasks store. A `DeadTasks` here always stands for the whole store; the limited form is task 03. covers AC-01, AC-03, AC-04, AC-12, AC-13, AC-21, AC-22
-- [ ] [03 — `find_by_ids`, `first`, and `last`](tasks/03-find-by-ids-first-last.md)
-  Adds the limited form of `DeadTasks` and the three methods that return it: `find_by_ids`, `first(n)`, and `last(n)`; also `first` and `last` without an argument. Read-only. Must ship in the same release as task 02: until it does, `first(n)` is `Enumerable`'s and returns an Array, and releasing that would make the change of its return type a break. covers AC-18, AC-19, AC-20
-- [ ] [04 — Delete dead tasks](tasks/04-delete.md)
-  Adds `DeadTask#delete` and the grouping of removals inside one `each` call, on the whole collection and on the ones that `find_by_ids`, `first(n)`, and `last(n)` return. Stops before anything that writes to the pending-task WAL. covers AC-07, AC-16
-- [ ] [05 — Replay dead tasks](tasks/05-replay.md)
-  Adds `DeadTask#replay` on top of task 04 and its grouping: the only operation that moves a task between the two stores. Supported inside a running server only, and the YARD text says so. covers AC-08, AC-09, AC-10, AC-11, AC-15
+  Leaves the app able to enumerate and find dead tasks through `Rage::Deferred.dead_tasks` (`each`, `find_by_id`) and to read a `Rage::Deferred::DeadTask`. Built on `each_dead_task` from task 01. Read-only: stops before anything that changes the dead-tasks store. A `DeadTasks` here always stands for the whole store; the limited form is task 04. covers AC-01, AC-03, AC-04, AC-12, AC-13, AC-21, AC-22
+- [ ] [03 — Delete and replay one dead task](tasks/03-delete-replay.md)
+  Adds `DeadTask#delete` and `DeadTask#replay`. Each call acts on one record and removes it from the dead-tasks store at once, with one rewrite of the store per call. The app reaches the record through `find_by_id` or `each` from task 02, and the two methods work inside the block of `each` in the same way, one rewrite per record; nothing here needs task 04 or task 05. `replay` is the only operation that moves a task between the two stores. It is supported inside a running server only, and the YARD text says so. covers AC-07, AC-08, AC-09, AC-10, AC-11, AC-15, AC-16
+- [ ] [04 — `find_by_ids`, `first`, and `last`](tasks/04-find-by-ids-first-last.md)
+  Optional: no other task depends on it. Adds the limited form of `DeadTasks` and the three methods that return it: `find_by_ids`, `first(n)`, and `last(n)`; also `first` and `last` without an argument. Read-only. If it is built, it must ship in the same release as task 02: until it does, `first(n)` is `Enumerable`'s and returns an Array, and releasing that would make the change of its return type a break. covers AC-18, AC-19, AC-20
+- [ ] [05 — Batch delete and replay](tasks/05-batch-delete-replay.md)
+  Optional: no other task depends on it. Groups the removals that `delete` and `replay` make inside the block of one `each` call into one rewrite of the store, applied when `each` ends. The grouping is internal to the framework: no public method gets a list of ids or a batch size. It holds for every `DeadTasks` collection that exists when this task is built: the whole store, and the limited collections of task 04 if that task is built first. covers AC-23
 - [ ] [06 — Replay outside a running server](tasks/06-replay-outside-server.md)
-  Makes `replay` work from the console and from a Rake task, and removes the limit that task 05 documents. The replayed task must run in a server that is already running, without a restart. Today such a process writes the task to its own WAL file and schedules it on a reactor that is not running, so the task waits for a later server boot. covers AC-17
+  Makes `replay` work from the console and from a Rake task, and removes the limit that task 03 documents. The replayed task must run in a server that is already running, without a restart. Today such a process writes the task to its own WAL file and schedules it on a reactor that is not running, so the task waits for a later server boot. covers AC-17
 
 ## Decisions
 
