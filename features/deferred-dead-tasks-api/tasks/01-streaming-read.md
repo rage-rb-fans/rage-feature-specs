@@ -322,4 +322,5 @@ Tested: HEAD b8c9a6c, files digest d9de859 (lib/rage/deferred/backends/disk.rb, 
 
 ## Result
 
-- Implementation PR:
+- Implementation PR: [rage-rb/rage#403](https://github.com/rage-rb/rage/pull/403)
+- Merge commit: [49f690e](https://github.com/rage-rb/rage/commit/49f690e8075ffce7af4df7b422cac39a4630aec9)

@@ -1,5 +1,5 @@
 ---
-status: ready-for-development
+status: done
 ---
 
 # Read and inspect dead tasks
@@ -194,6 +194,83 @@ Commands:
 - `bundle exec rubocop lib/rage/deferred spec/deferred`
 - `bundle exec yardoc --fail-on-warning`
 
+**Core tests**
+
+Existing examples changed: none.
+Kept whole: TC-04 — parts: id; class name; attempts; enqueue time; failure time; exception class; exception message; backtrace
+Kept whole: TC-06 — parts: `args`; `kwargs`
+Kept whole: TC-07 — parts: `args`; `kwargs`
+
+<!-- rage-flow:core-tests begin — written by a script, do not edit -->
+- TC-01: spec/deferred/deferred_spec.rb — "Rage::Deferred.dead_tasks yields a DeadTask with the id of a stored dead task" — red: assertion
+- TC-02: spec/deferred/dead_tasks_spec.rb — "Rage::Deferred::DeadTasks #each yields one DeadTask per stored record, oldest first" — red: assertion
+- TC-04.1: spec/deferred/dead_task_spec.rb — "Rage::Deferred::DeadTask returns the stored id, class name, attempts, enqueue time, failure time, exception class, exception message, and backtrace" — revert: not proven (NameError)
+- TC-04.2: spec/deferred/dead_task_spec.rb — "Rage::Deferred::DeadTask returns the stored id, class name, attempts, enqueue time, failure time, exception class, exception message, and backtrace" — revert: not proven (NameError)
+- TC-04.3: spec/deferred/dead_task_spec.rb — "Rage::Deferred::DeadTask returns the stored id, class name, attempts, enqueue time, failure time, exception class, exception message, and backtrace" — revert: not proven (NameError)
+- TC-04.4: spec/deferred/dead_task_spec.rb — "Rage::Deferred::DeadTask returns the stored id, class name, attempts, enqueue time, failure time, exception class, exception message, and backtrace" — revert: not proven (NameError)
+- TC-04.5: spec/deferred/dead_task_spec.rb — "Rage::Deferred::DeadTask returns the stored id, class name, attempts, enqueue time, failure time, exception class, exception message, and backtrace" — revert: not proven (NameError)
+- TC-04.6: spec/deferred/dead_task_spec.rb — "Rage::Deferred::DeadTask returns the stored id, class name, attempts, enqueue time, failure time, exception class, exception message, and backtrace" — revert: not proven (NameError)
+- TC-04.7: spec/deferred/dead_task_spec.rb — "Rage::Deferred::DeadTask returns the stored id, class name, attempts, enqueue time, failure time, exception class, exception message, and backtrace" — revert: not proven (NameError)
+- TC-04.8: spec/deferred/dead_task_spec.rb — "Rage::Deferred::DeadTask returns the stored id, class name, attempts, enqueue time, failure time, exception class, exception message, and backtrace" — revert: not proven (NameError)
+- TC-06.1: spec/deferred/dead_task_spec.rb — "Rage::Deferred::DeadTask returns the positional and keyword arguments the task was enqueued with" — red: assertion
+- TC-06.2: spec/deferred/dead_task_spec.rb — "Rage::Deferred::DeadTask returns the positional and keyword arguments the task was enqueued with" — red: assertion
+- TC-08: spec/deferred/dead_tasks_spec.rb — "Rage::Deferred::DeadTasks #each still yields a DeadTask when the task class of the record no longer exists" — red: assertion
+- TC-12: spec/deferred/dead_tasks_spec.rb — "Rage::Deferred::DeadTasks #each with the Nil backend yields nothing and returns the collection" — red: assertion
+- TC-15: spec/deferred/dead_tasks_spec.rb — "Rage::Deferred::DeadTasks #each returns the record from find_by_id called inside the block of each" — red: assertion
+<!-- rage-flow:core-tests end -->
+
+**Edge tests**
+
+Existing examples changed: none.
+Core test changed after its red run: TC-04 compares `backtrace` with the stored backtrace, because the store keeps only the first 20 lines; its lines in the `core-tests` block are from `rage-flow revert-check --core`.
+Ran: all 23 examples of `spec/deferred/dead_tasks_spec.rb`, `spec/deferred/dead_task_spec.rb`, and `spec/deferred/deferred_spec.rb` passed; none was skipped or pending.
+Not run: none.
+The tests still describe the two new classes by name as a string, so that the example names in the two blocks stay valid.
+TC-14 holds a real `flock` on the store's lock file from a second file handle, with no reactor; it does not show the scheduler-aware `sleep` between attempts. Its `revert: fails` is the `NameError` of the missing class inside `raise_error`, not a behavior of the base.
+
+<!-- rage-flow:edge-tests begin — written by a script, do not edit -->
+- TC-03: spec/deferred/dead_tasks_spec.rb — "Rage::Deferred::DeadTasks #each returns an Enumerator over the same records without a block" — revert: not proven (NameError)
+- TC-05: spec/deferred/dead_tasks_spec.rb — "Rage::Deferred::DeadTasks #find_by_id returns nil for an id that is not in the store" — revert: not proven (NameError)
+- TC-07.1: spec/deferred/dead_task_spec.rb — "Rage::Deferred::DeadTask returns empty collections for a task enqueued without arguments" — revert: not proven (NameError)
+- TC-07.2: spec/deferred/dead_task_spec.rb — "Rage::Deferred::DeadTask returns empty collections for a task enqueued without arguments" — revert: not proven (NameError)
+- TC-09: spec/deferred/dead_task_spec.rb — "Rage::Deferred::DeadTask raises ArgumentError from args if a class of the stored context no longer exists" — revert: not proven (NameError)
+- TC-13: spec/deferred/dead_tasks_spec.rb — "Rage::Deferred::DeadTasks #find_by_id with the Nil backend returns nil" — revert: not proven (NameError)
+- TC-14: spec/deferred/dead_tasks_spec.rb — "Rage::Deferred::DeadTasks #each raises DeadTasksLockTimeout if the lock of the store cannot be taken" — revert: fails
+- TC-16: spec/deferred/deferred_spec.rb — "Rage::Deferred.dead_tasks returns the same object on every call" — revert: not proven (NoMethodError)
+- TC-18: spec/deferred/dead_tasks_spec.rb — "Rage::Deferred::DeadTasks #each does not yield a dead task added while the block runs" — revert: not proven (NameError)
+- TC-19: spec/deferred/dead_tasks_spec.rb — "Rage::Deferred::DeadTasks #each yields one DeadTask for two records with the same task id" — revert: not proven (NameError)
+<!-- rage-flow:edge-tests end -->
+
+**Review outcome**
+
+Full review on 2026-10-05. Reviewers A (runtime correctness), B (contract, cost, surface, and tests), and C (code against the Design) ran; none was skipped.
+Reviewed code: `alex/deferred-dead-tasks-listing` plus one commit, HEAD 1aa7849, the whole range from b8c9a6c (merge base with `origin/main`). The engineer chose this range. It holds the backend part and the public classes in the same commits, and it is not the code the two records above were written for.
+Report (a local file): `.workflow/evidence/deferred-dead-tasks-api/02-read-inspect-review.md`.
+Applied: F2, F3, F7, F13, F14, F15, F16, F18, F19, F20, F21, F22, F23. Rejected: F24 (the Design chose `require_relative` over `autoload`).
+Unmet: TC-09 (fix applied)
+Final run: `rage-flow final-run` failed and wrote no block. None of the 25 mapped examples of the two records above is in the output: `spec/deferred/dead_task_spec.rb` does not exist on this code, and the other two files have other examples. No task example ran through the final run, so no criterion is proven.
+Checks: `bundle exec rubocop` found no offenses. `bundle exec yardoc --fail-on-warning` fails on one warning outside this task, `lib/rage/sse/message.rb:13`.
+Applied again on 2026-10-08: the branch was rewritten after the review (new HEAD 8521e86; `lib/` differs from the reviewed code only in comments and YARD text, the tests changed and were not reviewed again). The same 13 findings are applied on it; F22 needed no change, the branch has the changelog entry. The test line numbers in the lines below are those of the reviewed code. On 8521e86 the failing examples are `spec/deferred/dead_tasks_spec.rb:105`, `:116`, `:133`, `:247`, `:262`, `:289`, `:302`, `:341`, `:362`, `:371` and `spec/deferred/backends/disk_spec.rb:490`, `:936`; the example of F6 passes there.
+The Design says no backend file changes; on this code `backends/disk.rb` and `backends/nil.rb` are changed, also by F3, F13, F14, F18, and F19. The Design is not patched: F1 decides first whether the backend part stays.
+- F1 (needs the engineer's decision): `list_dead_tasks` is removed from the Disk and Nil backends, and `DeadTasksStorage#list`, `#find`, `#read_records`, `#entry_id` are gone; all were released in 1.28.0, and ADR-003 says they stay. Options: put the 1.28.0 code back beside the new read path; put the public methods back on top of the new frame parser, which stops listing a record with an empty id; keep the removal with a new ADR and a deprecation. Recommended: the first.
+- F3b (needs the engineer's decision): a record with a valid checksum whose payload is not a dumped String still stops `each` and `find_by_id` with `RuntimeError`. Options: leave it as in 1.28.0; add `RuntimeError` to the rescue list, and change the examples at `spec/deferred/backends/disk_spec.rb:488` and `:957`. Recommended: leave it.
+- F4 (needs the engineer's decision): `each` without a block, then `next`, runs the lock retry `sleep` in a blocking fiber and can freeze the worker for up to about 1.45 s. Options: a YARD note on `DeadTasks#each`; no `sleep` in `with_lock` for a blocking fiber under a scheduler. Recommended: the YARD note.
+- F5 (needs the engineer's decision): `Rage::Deferred.dead_tasks` builds the Disk backend on first call, also in the master process before the fork, where the workers then share one lock file and one WAL storage. Options: a lazy backend in `DeadTasks`; fork-safe state in the Disk backend; a YARD warning on `Rage::Deferred.dead_tasks`. Recommended: the YARD warning in this task, and fork-safe state as its own task.
+- F17 (needs the engineer's decision): `args` and `kwargs` return deep-frozen objects (`Marshal.load(…, freeze: true)`); the Design does not say so. Options: keep the freeze and write it into the Design; drop it. Recommended: keep it.
+- F2b (needs a test, for task:build): TC-09 — an example where `args` raises `ArgumentError` for a class that no longer exists; the examples at `spec/deferred/dead_tasks_spec.rb:213`, `:228`, `:255`, `:268` require the removed error class and fail.
+- F6 (needs a test, for task:build): the example at `spec/deferred/dead_tasks_spec.rb:65` expects frozen timestamps, which commit 1aa7849 removed, and checks that `delete` and `retry` do not exist; it fails.
+- F7b (needs a test, for task:build): TC-05 — the example at `spec/deferred/dead_tasks_spec.rb:108` requires a `TypeError` from `find_by_id` that the code no longer raises.
+- F8 (needs a test, for task:build): every line of the `core-tests` and `edge-tests` blocks names an example that is not in this code; the records need a red run and a revert check on it.
+- F9 (needs a test, for task:build): TC-01 — an example that goes through `Rage::Deferred.dead_tasks.each` with a task in a Disk store.
+- F10 (needs a test, for task:build): TC-08 — an example that hides the task class of a stored record and checks that `each` still yields it.
+- F11 (needs a test, for task:build): TC-12, TC-13 — one example each through `Rage::Deferred.dead_tasks` with `config.deferred.backend = nil`.
+- F12 (needs a test, for task:build): TC-15 — an example that calls `find_by_id` inside the block of `each` on a Disk backend.
+- F14b (needs a test, for task:build): the examples at `spec/deferred/backends/disk_spec.rb:495` and `:915` expect no output for corrupted records; the code now prints the `WARNING:` line, as the Requirements say, and they fail.
+- F16b (needs a test, for task:build): TC-16 — the examples at `spec/deferred/dead_tasks_spec.rb:97`, `:307`, `:328`, `:337` read `@backend` from a `DeadTasks` object; the ivar is `@__backend` now, and they fail.
+- F25 (needs a test, for task:build): TC-03 — an example that reads the Enumerator from `each` and compares it with the block form.
+- F26 (needs a test, for task:build): TC-14 — an example where a second handle holds the lock file and `DeadTasks#each` raises `DeadTasksLockTimeout`.
+
 ## Result
 
-- Implementation PR:
+- Implementation PR: [rage-rb/rage#403](https://github.com/rage-rb/rage/pull/403)
+- Merge commit: [49f690e](https://github.com/rage-rb/rage/commit/49f690e8075ffce7af4df7b422cac39a4630aec9)

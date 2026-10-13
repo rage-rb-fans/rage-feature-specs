@@ -113,9 +113,9 @@ Each one names what breaks when it is ignored.
 
 ## Tasks
 
-- [ ] [01 — Streaming read in the backend](tasks/01-streaming-read.md)
+- [x] [01 — Streaming read in the backend](tasks/01-streaming-read.md)
   Adds `each_dead_task` to the backend contract, in Disk and Nil, as ADR-003 defines it, and makes `find_dead_task` in Disk stop loading the whole store. Writes the keys of a dead-task record into the contract header. No public API: the boundary with task 02 is the backend contract. Covers no feature criterion by itself; task 02 proves AC-21 and AC-22 through the public API on top of it.
-- [ ] [02 — Read and inspect dead tasks](tasks/02-read-inspect.md)
+- [x] [02 — Read and inspect dead tasks](tasks/02-read-inspect.md)
   Leaves the app able to enumerate and find dead tasks through `Rage::Deferred.dead_tasks` (`each`, `find_by_id`) and to read a `Rage::Deferred::DeadTask`. Built on `each_dead_task` from task 01. Read-only: stops before anything that changes the dead-tasks store. A `DeadTasks` here always stands for the whole store; the limited form is task 03. covers AC-01, AC-03, AC-04, AC-12, AC-13, AC-21, AC-22
 - [ ] [03 — `find_by_ids`, `first`, and `last`](tasks/03-find-by-ids-first-last.md)
   Adds the limited form of `DeadTasks` and the three methods that return it: `find_by_ids`, `first(n)`, and `last(n)`; also `first` and `last` without an argument. Read-only. Must ship in the same release as task 02: until it does, `first(n)` is `Enumerable`'s and returns an Array, and releasing that would make the change of its return type a break. covers AC-18, AC-19, AC-20
@@ -135,5 +135,5 @@ Each one names what breaks when it is ignored.
 ## References
 
 - Rage issue:
-- Rage implementation PR:
+- Rage implementation PR: [rage-rb/rage#403](https://github.com/rage-rb/rage/pull/403) (tasks 01 and 02)
 - Storage this feature builds on: [deferred-dead-letter-queue, task 01](../deferred-dead-letter-queue/tasks/01-durable-dead-letter-storage.md), [rage-rb/rage#383](https://github.com/rage-rb/rage/pull/383)
