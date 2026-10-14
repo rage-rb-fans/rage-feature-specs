@@ -1,5 +1,5 @@
 ---
-status: draft
+status: done
 ---
 
 # Inspect a dead task
@@ -45,8 +45,10 @@ This task depends on task 02 and owns REQ-08; REQ-09's exception-detail readers;
 - Exact lookup is independent of every active enumeration session. Calling `find_by_id` while an Enumerator is paused must not advance, close, rewind, or replace that Enumerator's snapshot, and the lookup must not reuse its descriptor, cursor, winner index, or current decoded record.
 - Disk, Nil, and future adapters must produce the same observable `find_by_id` result and the same public `DeadTask` entry shape. Disk performs a complete sequential forward scan of a fixed complete-record view, Nil returns `nil` without side effects, and a future database adapter may use an indexed query. Do not promise equal time or I/O complexity across adapters.
 - Add shared backend-contract examples for exact lookup. Exercise them for Disk and Nil in this feature and structure them so a future adapter can reuse them. Do not add a database backend in this task.
-- Never use `eval` and never expose opaque Marshal bytes. Document that detailed argument data may contain credentials or personal data. Marshal input is trusted local application data only. The selected decoding diagnostic writes the ID, exception class, and unsanitized exception message to standard output.
-- Keep decoding and entry-construction helpers private with YARD `@private`. Fully document public readers, lookup return/error behavior, lazy decoding, immutability, and sensitive-data implications.
+- Never use `eval` and never expose opaque Marshal bytes. Detailed argument data can contain credentials or personal data.
+- Add YARD documentation for public readers, lookup return values, and the context-deserialization error.
+- Keep decoding and entry-construction helpers private with YARD `@private`.
+- Task 06 owns complete operator documentation for trusted Marshal data and sensitive output.
 - Keep this task's additions passive. Exact lookup and detailed readers must not add or require a collection reference, raw backend, operation delegate, or another mutation dependency. If task 04 has already introduced private action wiring, preserve it unchanged rather than replacing it with inspection-specific construction.
 - Preserve the backend abstraction: Nil lookup returns `nil`, performs no decoding, and creates no files; adding another conforming adapter must not require changes to `DeadTasks#find_by_id`.
 
@@ -82,43 +84,36 @@ Do not couple basic inspection to task constant resolution. Decode only the cont
 
 ## Acceptance criteria
 
-- [ ] `find_by_id` accepts only an exact String. It returns the newest frame-valid matching entry after successful decoding and construction. It returns `nil` for no match or a rescued selected failure. A newer malformed frame or invalid CRC permits an older frame-valid match. A newer frame-valid match always wins.
-- [ ] Inherited `find` and `detect` retain standard Enumerable predicate, optional fallback callable, and no-block behavior without any exact-ID overload.
-- [ ] Task 03 introduces a private exact-lookup capability for Disk and Nil from scratch. Both satisfy reusable shared exact-lookup contract examples and expose identical public result/entry shapes without backend-class branching in `DeadTasks`.
-- [ ] Disk enumeration and exact lookup retain no reverse-record scan or `ReverseLineReader`; both use the documented fixed-boundary sequential forward approach.
-- [ ] `find_by_id` can run while another traversal is paused without changing that traversal's snapshot or lifecycle.
-- [ ] Exception class, message, and backtrace remain inspectable without resolving the task class or decoding the context.
-- [ ] Args/kwargs decode lazily with correct positional/keyword fidelity and cannot be used to mutate stored replay input.
-- [ ] Marshal deserialization and `Rage::Deferred::Context` accessor failures raise the dedicated error with ID and cause, are not cached, and leave summary/exception metadata and storage intact.
-- [ ] Context decoding uses `Marshal.load(..., freeze: true)` plus `Rage::Deferred::Context.get_args`/`.get_kwargs`, normalizes accessor-returned `nil` values, caches only complete successful extraction, and does not duplicate context Array shape, minimum-length, or extracted Array/Hash type validation in the current storage version.
-- [ ] Malformed frames, invalid CRCs, and an incomplete tail are silently skipped without payload disclosure. Lookup performs no top-level Marshal load during its complete sequential forward scan, remembers only the newest frame-valid matching payload location, and decodes it only after the scan reaches the fixed boundary.
-- [ ] The selected winner is attempted only after frame selection. Selected `ArgumentError`, `NameError`, and `TypeError` failures print the exact diagnostic and return `nil`. The record remains stored. Other selected decoding and entry-construction failures propagate unchanged. No selected failure causes fallback to an older duplicate.
-- [ ] Exact-lookup lock-timeout and filesystem errors propagate unchanged, resources are cleaned in `ensure`, cleanup does not mask an active exception, and an otherwise sole storage cleanup exception is not suppressed.
-- [ ] Nil lookup remains empty and side-effect free, while adapter-specific lookup complexity remains outside the public guarantee.
-- [ ] All public lookup/read/error APIs have complete YARD documentation.
+- [x] `find_by_id` accepts only an exact String. It returns the newest frame-valid matching entry after successful decoding and construction. It returns `nil` for no match or a rescued selected failure. A newer malformed frame or invalid CRC permits an older frame-valid match. A newer frame-valid match always wins.
+- [x] Inherited `find` and `detect` retain standard Enumerable predicate, optional fallback callable, and no-block behavior without any exact-ID overload.
+- [x] Task 03 introduces a private exact-lookup capability for Disk and Nil from scratch. Both satisfy reusable shared exact-lookup contract examples and expose identical public result/entry shapes without backend-class branching in `DeadTasks`.
+- [x] Disk enumeration and exact lookup retain no reverse-record scan or `ReverseLineReader`; both use the documented fixed-boundary sequential forward approach.
+- [x] `find_by_id` can run while another traversal is paused without changing that traversal's snapshot or lifecycle.
+- [x] Exception class, message, and backtrace remain inspectable without resolving the task class or decoding the context.
+- [x] Args/kwargs decode lazily with correct positional/keyword fidelity and cannot be used to mutate stored replay input.
+- [x] Marshal deserialization and `Rage::Deferred::Context` accessor failures raise the dedicated error with ID and cause, are not cached, and leave summary/exception metadata and storage intact.
+- [x] Context decoding uses `Marshal.load(..., freeze: true)` plus `Rage::Deferred::Context.get_args`/`.get_kwargs`, normalizes accessor-returned `nil` values, caches only complete successful extraction, and does not duplicate context Array shape, minimum-length, or extracted Array/Hash type validation in the current storage version.
+- [x] Malformed frames, invalid CRCs, and an incomplete tail are silently skipped without payload disclosure. Lookup performs no top-level Marshal load during its complete sequential forward scan, remembers only the newest frame-valid matching payload location, and decodes it only after the scan reaches the fixed boundary.
+- [x] The selected winner is attempted only after frame selection. Selected `ArgumentError`, `NameError`, and `TypeError` failures print the exact diagnostic and return `nil`. The record remains stored. Other selected decoding and entry-construction failures propagate unchanged. No selected failure causes fallback to an older duplicate.
+- [x] Exact-lookup lock-timeout and filesystem errors propagate unchanged, resources are cleaned in `ensure`, cleanup does not mask an active exception, and an otherwise sole storage cleanup exception is not suppressed.
+- [x] Nil lookup remains empty and side-effect free, while adapter-specific lookup complexity remains outside the public guarantee.
+- [x] Public lookup, reader, and error APIs have YARD documentation. YARD builds without warnings.
 
 ## Verification
 
-- Add focused specs for `find_by_id` exact/missing/non-String lookup and detailed entry readers through Disk and Nil. Reuse task 02's Disk physical-corruption matrix to verify fallback past a malformed frame or invalid CRC and consistent authoritative outer-ID handling.
-- Verify inherited `find` and `detect` select entries with a block predicate, return the optional fallback callable's value only when no entry matches, do not invoke that fallback after a match, and return their standard Enumerator forms when called without a block.
-- Add shared backend-contract examples for existing, missing, duplicate, newer-frame-invalid duplicate, result-shape, and Nil-style empty lookup behavior. Apply the relevant examples to Disk and Nil. Keep the examples reusable by future adapters.
-- Add Disk-specific examples for each rescued selected failure class. Shared adapter contracts do not require other adapters to copy Disk's physical decoding implementation.
-- Cover exact lookup that finds a match despite malformed frames or invalid CRCs, returns `nil` when no frame-valid match exists, replaces an older frame-valid match with a newer one, retains an older match when a newer matching frame is invalid, and encounters an operational failure after skipped physical corruption or after a provisional match. Verify physical corruption is skipped silently and does not interact with a paused enumeration.
-- Instrument lookup to prove it scans every complete snapshot record forwards. Prove that it performs no `Marshal.load` before the fixed boundary.
-- Verify that lookup attempts only the newest remembered frame-valid match. For selected `ArgumentError`, `NameError`, and `TypeError`, verify the exact standard-output diagnostic and `nil` result.
-- Verify stored-record preservation and no older fallback for each rescued class. Verify that other selected decoding and entry-construction failures propagate unchanged.
-- Remove reverse-reader-specific specs and replace their read/seek failure coverage with equivalent sequential forward-scan coverage.
-- Cover selected payloads that decode as a non-Hash, omit or mistype fields, contain invalid backtrace/context values, or have an inner/outer-ID mismatch. Do not require shared schema/type rejection or older-record fallback for any of these payload problems.
-- Verify `DeadTasks#find_by_id` delegates through the new private backend capability without testing backend class identity or depending on task 01's removed lookup implementation. A lightweight conforming backend double may prove the collection needs no adapter-specific branch; do not implement a database adapter.
-- Pause an external Enumerator after its first entry, call `find_by_id`, and resume the Enumerator. Verify the lookup uses an independent backend operation and does not advance, close, rewind, or replace the paused snapshot.
-- Cover task classes that are loadable, renamed, removed, anonymous, or replaced by non-Class constants without breaking basic inspection.
-- Cover empty, positional-only, keyword-only, and mixed arguments under Ruby 3.3; verify lazy decode and defensive/frozen values.
-- Cover truncated context bytes, invalid Marshal, missing referenced constants, a raised context-accessor failure, repeat access after failure, and preservation of the dead record. Do not add a proactive rejection matrix for manually fabricated context shapes, missing slots, or wrong extracted value types.
-- Verify `Marshal.load(..., freeze: true)`, delegation to both `Rage::Deferred::Context` accessors, nil normalization, stable successful identities, successful-only caching, and immutability of nested/shared argument graphs.
-- Cover exception metadata and backtrace immutability without exception reconstruction, plus silent handling of invalid top-level records.
-- Inject snapshot-acquisition `Rage::Deferred::DeadTasksLockTimeout` and representative open/read/seek/cleanup `SystemCallError` failures. Verify they propagate unchanged from `find_by_id`, acquired resources are released, an active failure is not masked by cleanup, and a sole storage cleanup failure propagates. Keep these distinct from opaque-context deserialization-error examples.
-- Run the focused inspection specs, `bundle exec rspec spec/deferred/deferred_spec.rb spec/deferred/backends/disk_spec.rb`, the broader `bundle exec rspec spec/deferred`, and RuboCop for changed files.
+- Merged RSpec coverage exercises exact lookup, inherited Enumerable behavior, exception readers, and lazy context decoding.
+- Coverage includes immutable values, physical corruption, paused enumeration, Disk and Nil behavior, and operational failure cleanup.
+- Source review confirms the deployed rescue for `ArgumentError`, `NameError`, and `TypeError`.
+- The merged suite covers non-rescued selected failures. It does not contain one example for each rescued class.
+- Source review confirms the exact diagnostic, `nil` result, stored-record preservation, and no older fallback.
 
 ## Result
 
-- Implementation PR:
+- Implementation PR: [rage-rb/rage#403](https://github.com/rage-rb/rage/pull/403)
+- Merge commit: [`49f690e8075ffce7af4df7b422cac39a4630aec9`](https://github.com/rage-rb/rage/commit/49f690e8075ffce7af4df7b422cac39a4630aec9)
+- Direct focused RSpec: `137 examples, 0 failures`.
+- Ruby syntax checks: passed for six relevant production files.
+- Direct RuboCop: no offenses in 11 relevant files.
+- Direct `yardoc --fail-on-warning`: passed.
+- Bundled RSpec, Rake, RuboCop, and YARD commands were unavailable.
+- Bundler could not find the locally installed `mysql2` gem.
