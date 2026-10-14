@@ -200,8 +200,8 @@ The fresh-enqueue and out-of-process behavior is described in [ADR-002](adr/002-
 ## Tasks
 
 - [x] [01 — Add durable dead-letter storage](tasks/01-durable-dead-letter-storage.md)
-- [ ] [02 — List dead tasks](tasks/02-list-dead-tasks.md)
-- [ ] [03 — Inspect a dead task](tasks/03-inspect-a-dead-task.md)
+- [x] [02 — List dead tasks](tasks/02-list-dead-tasks.md)
+- [x] [03 — Inspect a dead task](tasks/03-inspect-a-dead-task.md)
 - [ ] [04 — Delete dead tasks](tasks/04-delete-dead-tasks.md)
 - [ ] [05 — Retry dead tasks](tasks/05-retry-dead-tasks.md)
 - [ ] [06 — Add Rake operations and documentation](tasks/06-rake-operations-and-documentation.md)

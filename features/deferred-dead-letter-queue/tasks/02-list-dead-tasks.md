@@ -1,5 +1,5 @@
 ---
-status: draft
+status: done
 ---
 
 # List dead tasks
@@ -165,23 +165,9 @@ For no-block and lazy iteration:
 - Remove the current `find_dead_task` methods from the Disk and Nil backend facades and `Disk::DeadTasksStorage#find`, together with their implementation documentation and tests. Task 03 introduces a conforming private exact-lookup capability when it adds public `find_by_id`; this task must not preserve the current eager forward lookup as an interim backend contract.
 - Keep `remove_dead_tasks` on the Disk and Nil backend facades. Its behavior and the underlying `remove` storage primitive remain unchanged for tasks 04 and 05.
 - Keep storage and snapshot helpers private. Use YARD `@private` where Ruby visibility cannot express that boundary.
-- Document all of the following:
-  - the accessor, collection, and passive summary readers;
-  - direct use of the shared backend identity by the collection and queue, and traversal-lazy DLQ snapshot work;
-  - the argument-free public `each` API and one-at-a-time selected-record decoding;
-  - stable snapshots, the complete sequential forward selection scan, delete-and-reinsert winner indexing, and oldest-first delivery;
-  - silent skipping of malformed frames, invalid CRCs, and an incomplete tail;
-  - newest-frame-valid selection without payload loading;
-  - the exact rescued selected-winner classes, standard-output diagnostic, skip behavior, and stored-record preservation;
-  - unchanged propagation of other selected decoding and entry-construction failures without older fallback;
-  - unchanged propagation of operational errors;
-  - automatic cleanup for block traversal and normally unwound terminal Enumerable operations;
-  - standard Ruby Enumerator behavior and the absence of a custom `close` API;
-  - nondeterministic descriptor cleanup for abandoned partial external or lazy traversal;
-  - the lifetime of an old, unlinked inode; and
-  - the sensitive-data risk.
-- Reverse file reading, frame-only winner-index construction, selected-record re-reading, and selected top-level Marshal decoding are synchronous work in the calling Fiber. Document this behavior. Snapshot setup does not scan the complete store under lock, but every non-empty traversal scans the complete snapshot before its first yield and a large traversal can delay other work in that worker.
-- Document that Marshal payloads are trusted local application data and that physical frame validation does not make untrusted Marshal data safe to decode.
+- Add YARD documentation for the public accessor, collection, summary readers, and private backend listing capability.
+- Mark private helpers with YARD `@private` where Ruby visibility cannot express the boundary.
+- Task 06 owns complete operator documentation for traversal lifecycle, security, and performance.
 - Preserve Ruby 3.3.0 compatibility and the existing `config.deferred.backend` contract.
 - Do not add polling or work to successful deferred-task execution.
 
@@ -276,66 +262,46 @@ second.next # snapshot B starts later and may include the appended task
 
 ## Acceptance criteria
 
-- [ ] `Rage::Deferred.dead_tasks` is memoized. Repeated calls return the same shared public collection object, initialized with the shared memoized backend obtained through `Rage::Deferred.__backend`.
-- [ ] The collection retains that backend object directly. The collection and queue use one identical memoized backend object regardless of which one initializes it first.
-- [ ] The shared collection retains no traversal state. Every no-block `each` call returns a distinct normal Ruby Enumerator. Each block traversal and top-level Enumerable operation owns a private traversal execution.
-- [ ] Obtaining the collection may resolve and initialize the backend. Obtaining the collection or a valid unadvanced Enumerator does not open a DLQ snapshot descriptor or scan, decode, or preload DLQ records.
-- [ ] `DeadTasks#each` is argument-free. Disk retains no `RECORD_BATCH_SIZE` or decoded-record batch and decodes selected winners one at a time.
-- [ ] The no-block return value is a normal lazy Ruby Enumerator. It has standard Ruby 3.3 behavior and no Rage-specific `close`, shared-cursor, lookahead, generation, or mixed-consumer lifecycle.
-- [ ] Separate top-level Enumerable operations and separate collection `each` calls use separate traversal executions and snapshots. Mixed internal and external consumption of one returned Enumerator follows standard Ruby behavior without Rage synchronization.
-- [ ] Overlapping collection Enumerators, nested traversal, and same-process Fiber-interleaved traversal remain independent. Exhaustion, `break`, or an exception in one collection traversal does not affect another.
-- [ ] Snapshot boundaries are established independently on first advancement, so a later-starting Enumerator may include an append that an already-started Enumerator excludes.
-- [ ] Under the permanent lock, Disk setup captures an open descriptor and the last complete-record boundary. It does not scan or decode all earlier complete records. It releases the lock before validation or yielding.
-- [ ] Before its first yield, traversal scans all complete snapshot records sequentially forwards. It builds a complete insertion-ordered winner index without calling `Marshal.load`. Traversal then processes winners oldest-first by selected physical position. A repeated frame-valid ID moves to its newest position. Beyond the index and bounded line storage, traversal holds at most the current decoded record.
-- [ ] For duplicate outer IDs, the newest frame-valid record wins. A newer malformed frame or invalid CRC does not hide an older frame-valid record, but a newer frame-valid record with an unreadable, non-Hash, schema-incompatible, wrongly typed, invalid-backtrace/context, or inner/outer-ID-mismatched payload does hide every older duplicate.
-- [ ] Malformed frames, invalid CRCs, and an incomplete tail are silently skipped without payload disclosure or diagnostic output. On Disk, the outer framed ID is consistently used as the public and logical ID.
-- [ ] Each selected winner is attempted immediately before a possible yield. A selected `ArgumentError`, `NameError`, or `TypeError` prints the exact standard-output diagnostic. Enumeration skips that logical task, continues, and keeps the record stored. Other selected decoding and entry-construction failures propagate unchanged. No failure falls back to an older duplicate.
-- [ ] A normally continuing snapshot is unchanged by append, task 01 torn-tail repair plus append, or rename-based compaction performed through backend or storage hooks between yields.
-- [ ] `first(20)` processes winners oldest-first and returns up to 20 entries that enumeration can yield. It performs the complete selection scan before yielding. Rescued failures can make it attempt more than 20 winners. It performs no selected-record predecode.
-- [ ] Enumeration closes snapshot resources on exhaustion, block `break`, non-local exit, exception, and normally unwound terminal Enumerable early exit. It never holds the dead-task lock while decoding or running user code.
-- [ ] A partially consumed external or lazy traversal may retain its descriptor and an old unlinked inode until that execution exhausts, unwinds, or is garbage-collected. Rage offers no deterministic public cancellation API in this task.
-- [ ] Snapshot-acquisition lock timeout and open/read/seek/cleanup errors propagate unchanged from the lazy operation that encounters them. Cleanup runs through `ensure` and does not mask an existing exception. When cleanup is the only failure, its original storage exception propagates.
-- [ ] Summary entries are passive, read-only values and expose the documented typed metadata.
-- [ ] Summary entries do not resolve task classes, deserialize contexts, or retain a collection, backend, operation delegate, or other mutation dependency.
-- [ ] Nil enumeration is empty and creates no persistence or background activity.
-- [ ] Argument-free `each_dead_task` is the only private dead-task backend read primitive after this task. Disk and Nil no longer define `list_dead_tasks` or `find_dead_task`, `Disk::DeadTasksStorage` no longer defines `list` or `find`, and implementation documentation no longer advertises those obsolete eager methods. The existing `remove_dead_tasks` facade method and its storage behavior remain available and unchanged.
-- [ ] Public APIs and private helpers have the required YARD documentation.
+- [x] `Rage::Deferred.dead_tasks` is memoized. Repeated calls return the same shared public collection object, initialized with the shared memoized backend obtained through `Rage::Deferred.__backend`.
+- [x] The collection retains that backend object directly. The collection and queue use one identical memoized backend object regardless of which one initializes it first.
+- [x] The shared collection retains no traversal state. Every no-block `each` call returns a distinct normal Ruby Enumerator. Each block traversal and top-level Enumerable operation owns a private traversal execution.
+- [x] Obtaining the collection may resolve and initialize the backend. Obtaining the collection or a valid unadvanced Enumerator does not open a DLQ snapshot descriptor or scan, decode, or preload DLQ records.
+- [x] `DeadTasks#each` is argument-free. Disk retains no `RECORD_BATCH_SIZE` or decoded-record batch and decodes selected winners one at a time.
+- [x] The no-block return value is a normal lazy Ruby Enumerator. It has standard Ruby 3.3 behavior and no Rage-specific `close`, shared-cursor, lookahead, generation, or mixed-consumer lifecycle.
+- [x] Separate top-level Enumerable operations and separate collection `each` calls use separate traversal executions and snapshots. Mixed internal and external consumption of one returned Enumerator follows standard Ruby behavior without Rage synchronization.
+- [x] Overlapping collection Enumerators, nested traversal, and same-process Fiber-interleaved traversal remain independent. Exhaustion, `break`, or an exception in one collection traversal does not affect another.
+- [x] Snapshot boundaries are established independently on first advancement, so a later-starting Enumerator may include an append that an already-started Enumerator excludes.
+- [x] Under the permanent lock, Disk setup captures an open descriptor and the last complete-record boundary. It does not scan or decode all earlier complete records. It releases the lock before validation or yielding.
+- [x] Before its first yield, traversal scans all complete snapshot records sequentially forwards. It builds a complete insertion-ordered winner index without calling `Marshal.load`. Traversal then processes winners oldest-first by selected physical position. A repeated frame-valid ID moves to its newest position. Beyond the index and bounded line storage, traversal holds at most the current decoded record.
+- [x] For duplicate outer IDs, the newest frame-valid record wins. A newer malformed frame or invalid CRC does not hide an older frame-valid record, but a newer frame-valid record with an unreadable, non-Hash, schema-incompatible, wrongly typed, invalid-backtrace/context, or inner/outer-ID-mismatched payload does hide every older duplicate.
+- [x] Malformed frames, invalid CRCs, and an incomplete tail are silently skipped without payload disclosure or diagnostic output. On Disk, the outer framed ID is consistently used as the public and logical ID.
+- [x] Each selected winner is attempted immediately before a possible yield. A selected `ArgumentError`, `NameError`, or `TypeError` prints the exact standard-output diagnostic. Enumeration skips that logical task, continues, and keeps the record stored. Other selected decoding and entry-construction failures propagate unchanged. No failure falls back to an older duplicate.
+- [x] A normally continuing snapshot is unchanged by append, task 01 torn-tail repair plus append, or rename-based compaction performed through backend or storage hooks between yields.
+- [x] `first(20)` processes winners oldest-first and returns up to 20 entries that enumeration can yield. It performs the complete selection scan before yielding. Rescued failures can make it attempt more than 20 winners. It performs no selected-record predecode.
+- [x] Enumeration closes snapshot resources on exhaustion, block `break`, non-local exit, exception, and normally unwound terminal Enumerable early exit. It never holds the dead-task lock while decoding or running user code.
+- [x] A partially consumed external or lazy traversal may retain its descriptor and an old unlinked inode until that execution exhausts, unwinds, or is garbage-collected. Rage offers no deterministic public cancellation API in this task.
+- [x] Snapshot-acquisition lock timeout and open/read/seek/cleanup errors propagate unchanged from the lazy operation that encounters them. Cleanup runs through `ensure` and does not mask an existing exception. When cleanup is the only failure, its original storage exception propagates.
+- [x] Summary entries are passive, read-only values and expose the documented typed metadata.
+- [x] Summary entries do not resolve task classes, deserialize contexts, or retain a collection, backend, operation delegate, or other mutation dependency.
+- [x] Nil enumeration is empty and creates no persistence or background activity.
+- [x] Disk and Nil no longer define `list_dead_tasks`. `each_dead_task` provides private listing. Task 03 adds `find_dead_task`. The existing `remove_dead_tasks` behavior remains unchanged.
+- [x] Public APIs and private helpers have YARD documentation. YARD builds without warnings.
 
 ## Verification
 
-- Add focused specs for the accessor, collection, passive summary entries, Disk snapshot primitive, sequential forward enumeration scan, and Nil traversal behavior.
-- Start with `Rage::Deferred`'s `@__backend` unset. Cover collection creation, memoized wrapper identity, and lazy no-block Enumerator creation. Verify that collection access resolves the configured backend once and passes that exact object directly to `DeadTasks`. Collection access and each valid unadvanced Enumerator must not invoke DLQ traversal, open a snapshot descriptor, or scan, decode, or preload DLQ records. Every no-block `each` call returns a distinct normal Ruby Enumerator, while block-based traversal executions are independent.
-- Cover both initialization orders. If the queue resolves `Rage::Deferred.__backend` first, the collection must receive that exact object. If collection access resolves it first, the queue must later use that exact object. Verify that only one configured backend instance is constructed in either order.
-- Verify that `each` accepts no arguments and that its unadvanced no-block form invokes no DLQ traversal method and opens no snapshot descriptor.
-- Cover oldest-first order and one-at-a-time selected-record attempts. Without rescued failures, prove that `first(20)` decodes only the oldest 20 winners.
-- With rescued failures, prove that `first(20)` skips affected winners. Verify later attempts until return or snapshot exhaustion.
-- Cover multiple physical records for one authoritative outer ID. The newest frame-valid record wins. Verify fallback to the next older frame-valid record only when a newer record has a malformed frame or invalid CRC. Verify that unreadable top-level Marshal payloads, decoded non-Hash values, missing fields, wrong field types, invalid backtrace/context values, and inner/outer-ID mismatches are not checked during selection and do not permit fallback past a newer frame-valid record.
-- Do not retain tests that require storage selection to validate required keys/types, String-only backtraces, String context, or inner/outer-ID equality.
-- Create earlier complete records and an incomplete tail. Start the snapshot, then call task 01's real add path so it repairs the tail and appends. Verify that the traversal yields only the original complete logical records, in unchanged order.
-- Through backend or storage hooks, append and run rename-based compaction between yields. Verify that remaining snapshot entries are not skipped, duplicated, reordered, or replaced.
-- Use a representative many-record fixture. Verify the complete O(distinct frame-valid outer IDs) winner index, bounded physical-line scan storage, at most one traversal-owned decoded record, and the absence of an all-payload cache.
-- Instrument traversal to prove that even `first(1)` completes the forward selection scan before its first yield. Prove that the winner-index scan performs no `Marshal.load`.
-- Without rescued failures, verify that `first(1)` attempts one winner. Verify that `first(20)` and `take(20)` attempt 20 winners when enough winners exist.
-- For selected `ArgumentError`, `NameError`, and `TypeError`, verify the exact standard-output diagnostic. Verify skip, continuation, stored-record preservation, and no older fallback.
-- Verify that rescued failures can increase attempts beyond the returned entry count. Verify that other selected decoding and entry-construction failures propagate unchanged.
-- Instrument one-at-a-time delivery to prove that each selected winner is attempted immediately before a possible yield.
-- Verify that Disk holds the permanent lock only while opening the file and locating the boundary. It must release the lock before record validation and the first yield. It must preserve task 01's lock-timeout behavior for competing operations.
-- Verify automatic descriptor cleanup after full exhaustion, block `break`, another non-local exit, and an exception.
-- Verify cleanup when terminal Enumerable operations, including `find`, `first`, and `take`, stop early and unwind `DeadTasks#each`.
-- Verify that a fully exhausted no-block Enumerator runs normal `ensure` cleanup. Verify that the returned Enumerator has no Rage-specific public `close` API.
-- Exercise standard Ruby mixed internal and external Enumerator behavior. Do not assert a shared cursor, snapshot, descriptor, lookahead, or exhaustion state across those consumption modes.
-- Verify that separate top-level Enumerable methods and separate collection `each` calls create separate traversal executions. Start one execution, append a record, and then start another; their independently timed snapshots may differ as documented.
-- For malformed frames, invalid CRCs, and an incomplete tail, verify silent skipping without diagnostic output and confirm that early termination still completes the full selection scan required for duplicate resolution and oldest-first order.
-- Cover two overlapping external Enumerators and nested `each`, including interleaved advancement from same-process Fibers. Verify that exhaustion, `break`, and an exception in one collection traversal do not affect the other.
-- Demonstrate the documented partial external/lazy limitation without depending on collection timing: a suspended execution may still own its descriptor and keep an unlinked inode alive. Do not force garbage collection or test finalizer timing. Exhaust or otherwise normally unwind every test traversal before teardown.
-- Inject `Rage::Deferred::DeadTasksLockTimeout` during first advancement. Also inject representative `SystemCallError` failures during open, forward read/seek, and descriptor cleanup.
-- Verify that each error propagates unchanged from the operation that encounters it and that acquired resources are released. Cleanup must not mask an active traversal or user-block exception. A storage cleanup exception must propagate when it is the only failure.
-- Cover missing task classes, immutable/defensive summary values, absence of task-02 mutation methods or dependencies, silent skipped-record handling, and empty Nil enumeration.
-- Remove eager `list_dead_tasks`/`DeadTasksStorage#list` and current `find_dead_task`/`DeadTasksStorage#find` coverage. Replace state assertions that used the eager list facade only as a test helper with `each_dead_task` or direct storage evidence. Verify that Disk, Nil, and `Disk::DeadTasksStorage` no longer expose the removed read methods while `remove_dead_tasks` continues to work.
-- Run focused Disk, Nil, collection, and `DeadTask` specs, including `bundle exec rspec spec/deferred/deferred_spec.rb spec/deferred/backends/disk_spec.rb` and the focused listing specs.
-- Run the broader `bundle exec rspec spec/deferred` and `bundle exec rake` when dependencies permit.
-- Run RuboCop for changed Ruby/spec files, YARD with `--fail-on-warning`, Ruby syntax checks for changed Ruby files, and `git diff --check`. Report unavailable checks and their exact dependency failures.
+- Merged RSpec coverage exercises collection identity, shared backend use, traversal laziness, and summary readers.
+- Coverage includes forward selection, duplicates, physical corruption, snapshot isolation, cleanup, and Disk and Nil behavior.
+- Source review confirms the deployed rescue for `ArgumentError`, `NameError`, and `TypeError`.
+- The merged suite covers non-rescued selected failures. It does not contain one example for each rescued class.
+- Source review confirms the exact diagnostic, skip, continuation, stored-record preservation, and no older fallback.
 
 ## Result
 
-- Implementation PR:
+- Implementation PR: [rage-rb/rage#403](https://github.com/rage-rb/rage/pull/403)
+- Merge commit: [`49f690e8075ffce7af4df7b422cac39a4630aec9`](https://github.com/rage-rb/rage/commit/49f690e8075ffce7af4df7b422cac39a4630aec9)
+- Direct focused RSpec: `137 examples, 0 failures`.
+- Ruby syntax checks: passed for six relevant production files.
+- Direct RuboCop: no offenses in 11 relevant files.
+- Direct `yardoc --fail-on-warning`: passed.
+- Bundled RSpec, Rake, RuboCop, and YARD commands were unavailable.
+- Bundler could not find the locally installed `mysql2` gem.
