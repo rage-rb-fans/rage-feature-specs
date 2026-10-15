@@ -44,9 +44,13 @@ task.kwargs            # => { email: "user@example.com" }
 
 task.replay                                       # enqueue this task again and remove its record
 task.delete                                       # remove this record
+
+# For an app that has only the id (ADR-004)
+dead_tasks.delete("1759312800-4242-7")            # => true or false
+dead_tasks.replay("1759312800-4242-7")            # => true or false
 ```
 
-`each` is the way to read the whole store; there is no `list`, no `limit`, and no `offset`. `DeadTask#replay` and `DeadTask#delete` are the only writes, and each acts on one record. No public write method takes a list of ids or a batch size.
+`each` is the way to read the whole store; there is no `list`, no `limit`, and no `offset`. The writes are `DeadTask#replay` and `DeadTask#delete`, and `DeadTasks#replay(id)` and `DeadTasks#delete(id)` for an app that has only the id (ADR-004). Each acts on one record. No public write method takes a list of ids or a batch size.
 
 `replay` and `delete` remove their record from the store at once, with one rewrite of the store per call. This is the same on the record that `find_by_id` returns and inside the block of `each`, so `dead_tasks.each(&:replay)` works and costs one rewrite per record.
 
@@ -60,7 +64,7 @@ Two parts of this API are optional, and the feature is complete without them: `f
 
 The lookup by id is named `find_by_id` because `Enumerable#find` takes a block; a `find(id)` would replace it and break `dead_tasks.find { ... }`.
 
-The four operations the request names map to: read = `each`, inspect = `find_by_id` plus the readers of `DeadTask` (and `find_by_ids`, when task 04 is built), delete = `DeadTask#delete`, replay = `DeadTask#replay`.
+The four operations the request names map to: read = `each`, inspect = `find_by_id` plus the readers of `DeadTask` (and `find_by_ids`, when task 04 is built), delete = `DeadTask#delete` or `DeadTasks#delete(id)`, replay = `DeadTask#replay` or `DeadTasks#replay(id)`.
 
 ### Constraints
 
@@ -120,6 +124,8 @@ AC-18, AC-19, and AC-20 (task 04) and AC-23 (task 05) belong to optional tasks; 
 - [ ] AC-21: If a dead task is added to the store while the block of `each` runs, that `each` call does not yield it.
 - [ ] AC-22: If the store holds two records with the same task id, `each` yields one `DeadTask` for that id.
 - [ ] AC-23: When `delete` or `replay` is called on several dead tasks inside the block of one `each` call, their records are removed with one rewrite of the store, when that `each` call ends.
+- [ ] AC-24: When `dead_tasks.delete` is called with the id of a stored record, `find_by_id` returns `nil` for that id.
+- [ ] AC-25: When `dead_tasks.replay` is called with the id of a stored record, the task's `perform` runs again with the same arguments.
 
 ## Tasks
 
@@ -128,7 +134,7 @@ AC-18, AC-19, and AC-20 (task 04) and AC-23 (task 05) belong to optional tasks; 
 - [x] [02 — Read and inspect dead tasks](tasks/02-read-inspect.md)
   Leaves the app able to enumerate and find dead tasks through `Rage::Deferred.dead_tasks` (`each`, `find_by_id`) and to read a `Rage::Deferred::DeadTask`. Built on `each_dead_task` from task 01. Read-only: stops before anything that changes the dead-tasks store. A `DeadTasks` here always stands for the whole store; the limited form is task 04. covers AC-01, AC-03, AC-04, AC-12, AC-13, AC-21, AC-22
 - [ ] [03 — Delete and replay one dead task](tasks/03-delete-replay.md)
-  Adds `DeadTask#delete` and `DeadTask#replay`. Each call acts on one record and removes it from the dead-tasks store at once, with one rewrite of the store per call. The app reaches the record through `find_by_id` or `each` from task 02, and the two methods work inside the block of `each` in the same way, one rewrite per record; nothing here needs task 04 or task 05. `replay` is the only operation that moves a task between the two stores. It is supported inside a running server only, and the YARD text says so. covers AC-07, AC-08, AC-09, AC-10, AC-11, AC-15, AC-16
+  Adds `DeadTask#delete` and `DeadTask#replay`. Each call acts on one record and removes it from the dead-tasks store at once, with one rewrite of the store per call. The app reaches the record through `find_by_id` or `each` from task 02, and the two methods work inside the block of `each` in the same way, one rewrite per record; nothing here needs task 04 or task 05. `replay` is the only operation that moves a task between the two stores. It is supported inside a running server only, and the YARD text says so. Also adds `DeadTasks#delete(id)` and `DeadTasks#replay(id)` for an app that has only the id (ADR-004). covers AC-07, AC-08, AC-09, AC-10, AC-11, AC-15, AC-16, AC-24, AC-25
 - [ ] [04 — `find_by_ids`, `first`, and `last`](tasks/04-find-by-ids-first-last.md)
   Optional: no other task depends on it. Adds the limited form of `DeadTasks` and the three methods that return it: `find_by_ids`, `first(n)`, and `last(n)`; also `first` and `last` without an argument. Read-only. If it is built, it must ship in the same release as task 02: until it does, `first(n)` is `Enumerable`'s and returns an Array, and releasing that would make the change of its return type a break. covers AC-18, AC-19, AC-20
 - [ ] [05 — Batch delete and replay](tasks/05-batch-delete-replay.md)
@@ -141,6 +147,7 @@ AC-18, AC-19, and AC-20 (task 04) and AC-23 (task 05) belong to optional tasks; 
 - [ADR-001 — Shape of the public surface](adr/001-public-surface.md)
 - [ADR-002 — Replay semantics](adr/002-replay-semantics.md)
 - [ADR-003 — Streaming read of the dead-tasks store](adr/003-streaming-read.md)
+- [ADR-004 — Delete and replay by id on the collection](adr/004-writes-by-id.md)
 
 ## References
 
