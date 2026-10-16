@@ -88,7 +88,19 @@ The collection and final active-entry shape, including the mutation-safe snapsho
 - REQ-11: `DeadTask#delete` and `DeadTasks#delete(id_or_ids)` permanently remove records. The entry method returns `true` only when its logical record was removed. The collection method requires one String ID or one flat Array of String IDs. It de-duplicates Array members and returns the number of distinct records removed. An empty Array returns `0`. Missing or already-removed IDs are not errors. Zero arguments or multiple arguments raise `ArgumentError`. A nested Array or another non-String value raises `TypeError`. Invalid input does not change storage. For a large selected set, callers should collect exact IDs with `filter_map` and pass that array to one `dead_tasks.delete(ids)` call; the accumulator retains memory proportional to the selected IDs in addition to the traversal's complete winner index, while Disk performs one locked compaction rather than one per entry.
 - REQ-12: `DeadTask#retry` and `DeadTasks#retry(id)` retry one record. A missing or concurrently deleted ID returns `false`; a successful retry returns `true`. A rescued selected lookup failure also returns `false` after the REQ-17 diagnostic. It does not enqueue or remove the stored record. This feature adds no collection-level bulk-retry primitive. Retrying a large set performs a fresh enqueue and an individual dead-store removal for every task. This work may approach quadratic storage cost under task 01's rewrite algorithm. An optimized large-set retry workflow is future work.
 - REQ-13: Retry resolves the stored class name without `eval`, verifies that it is a class including `Rage::Deferred::Task`, deserializes the original arguments, and invokes the normal public enqueue path. This creates a fresh context and task ID, resets the attempt count, runs enqueue middleware and enqueue telemetry again, and does not recreate the old exception.
-- REQ-14: Retry removes the dead-task record only after the new pending WAL write and enqueue call succeed. Class resolution, context deserialization, middleware, backpressure, or pending-storage failure leaves the dead task intact. A dead-store deletion error is raised after enqueue and can leave both a new pending task and the dead task; retry is at-least-once, not exactly-once.
+- REQ-14: `DeadTasks#retry` owns exact-ID lookup, class validation, original argument decoding, public enqueue, optional flush, and dead-record removal. The collection calls `task_class.enqueue(*args, **kwargs)`. The collection then calls `@backend.flush` only when `@backend.respond_to?(:flush)`. After persistence confirmation, the collection calls `@backend.remove_dead_tasks(id)` and returns `true`. A zero removal count also returns `true`.
+
+  Disk exposes optional `flush`, which delegates to its internal `TasksStorage#sync!`. An adapter may omit `flush` only when successful enqueue already guarantees durable, recoverable pending work. Buffered adapters must provide `flush`. The capability check alone does not prove persistence. The contract does not require `flush` on every backend. Do not add no-op flush methods.
+
+  Nil returns `false` before enqueue or flush.
+
+  Class resolution, context deserialization, middleware, backpressure, or pending-storage failure leaves the dead task intact. An optional flush failure propagates unchanged and preserves the dead record. The pending outcome remains uncertain. Execution can start before synchronization completes. Repeating retry can duplicate work.
+
+  A removal failure after confirmed persistence raises a retry-specific error with the original cause. The error states that work can exist in both stores. Retry remains at-least-once.
+
+  Disk's internal synchronization confirms relevant WAL file and directory durability across rotation and recovery. Disk retains required descriptors and source data until replacement durability is confirmed. Elapsed `fsync_frequency` alone must not authorize source-file cleanup. The timer retains ordinary batching and retries unsynchronized writes after failure. Explicit synchronization must not clear newer dirty state.
+
+  Public enqueue and backend `add_task` signatures remain unchanged. This design adds no backend retry orchestrator, application callback block, retry flag, or shared synchronization parameter.
 - REQ-15: Concurrent retry/delete operations are serialized only for their individual storage calls. Two operators racing to retry the same snapshot can enqueue duplicate work, and a delete racing with a retry does not cancel work already enqueued. Operator documentation must require coordination for mutation commands and warn that large retry sets combine necessary per-task enqueues, repeated dead-store compactions, and at-least-once duplication risk.
 - REQ-16: `Queue#schedule` is a no-op unless `Iodine.running?`. A retry from Rake, IRB, or another process without a running Iodine loop therefore persists a new pending WAL record but does not execute it. Rage emits an explicit warning that a server restart is required. Periodic adoption of out-of-band/orphan WAL files is deferred and is not part of this feature.
 
@@ -125,6 +137,8 @@ The fresh-enqueue and out-of-process behavior is described in [ADR-002](adr/002-
 
 - REQ-24: The feature is additive, preserves `config.deferred.backend` and its existing options, and requires no new configuration. It supports Rage's minimum Ruby version, 3.3.0.
 - REQ-25: Apps that never access `dead_tasks` incur no new public-API allocation or polling. Tasks that do not permanently fail incur no new per-execution conditional beyond the task-01 handoff.
+
+  Ordinary enqueue gains no retry-specific synchronization or retry-state checks. Explicit synchronization adds a durability wait to Disk retry.
 
   Snapshot setup holds the permanent lock while Disk opens the live file and locates the last complete-record boundary. Disk does not scan or decode the complete store while locked.
 
@@ -171,7 +185,7 @@ The fresh-enqueue and out-of-process behavior is described in [ADR-002](adr/002-
 
   Exact lookup uses the same fixed-boundary forward frame scan. It remembers only the newest matching payload location. It attempts that payload after the scan.
 - [ ] AC-04: Each public entry exposes the documented metadata, exception details, and lazily decoded positional and keyword arguments without requiring the task class for basic inspection. Argument decoding uses frozen Marshal loading plus `Rage::Deferred::Context` accessors, nil normalization, successful-only caching, and the dedicated ID-and-cause error boundary, without duplicating the current storage version's context shape or extracted-value type rules.
-- [ ] AC-05: A recoverable retry creates a fresh normally enqueued task with reset attempts. It removes the dead record only after enqueue succeeds. A rescued selected lookup failure prints the REQ-17 diagnostic, returns `false`, and keeps the record stored. Every other failure and partial-success case follows REQ-14.
+- [ ] AC-05: A recoverable retry creates a fresh normally enqueued task with reset attempts. The collection removes the dead record only after enqueue and persistence confirmation succeed. Disk confirms WAL file and directory durability across rotation and recovery. A rescued selected lookup failure prints the REQ-17 diagnostic, returns `false`, and keeps the record stored. Every other failure and partial-success case follows REQ-14.
 - [ ] AC-06: Delete accepts one String or one flat Array of Strings. It handles duplicate, missing, empty-Array, and concurrently stale IDs with the documented return values. It rejects zero arguments, multiple arguments, nested Arrays, and other non-String values without storage mutation. One non-empty collection-level call delegates to one Disk compaction.
 - [ ] AC-07: Malformed frames, invalid CRCs, and excluded torn tails produce no diagnostic output. These failures do not delete recoverable data. A newer frame-valid duplicate remains the winner after a payload problem. Covered problems include non-Hash payloads, missing or mistyped fields, and invalid backtrace or context values. Coverage includes inner/outer-ID mismatches. No selected payload problem causes fallback to an older duplicate.
 
@@ -195,7 +209,7 @@ The fresh-enqueue and out-of-process behavior is described in [ADR-002](adr/002-
 
   Coverage verifies forward winner selection and one-at-a-time oldest-first delivery. It includes torn-tail repair with append and rename compaction during enumeration. It covers lazy frozen context decoding through `Rage::Deferred::Context`. Context coverage includes nil normalization, immutable graphs, successful-only caching, and ID-and-cause errors.
 
-  Coverage includes retry and delete failures, races, non-running Iodine behavior, Rake output, and Rake status. Argument replay remains Ruby 3.3 compatible.
+  Coverage verifies collection-owned retry, optional flush, and flush failure without dead-record removal. Adapter conformance verifies durable enqueue without flush and buffered enqueue with flush. It covers timer retry, newer dirty writes, and rotation/recovery durability. Coverage includes retry and delete failures, races, non-running Iodine behavior, Rake output, and Rake status. Argument replay remains Ruby 3.3 compatible.
 
 ## Tasks
 
@@ -215,8 +229,11 @@ Task dependencies: task 01 precedes task 02; task 02 precedes tasks 03 and 04; b
 
 ## Open questions for this draft
 
-1. Should retry create a fresh context through `Task.enqueue`, as proposed, or preserve the original serialized logger/user context by calling the queue directly? Recommendation: use the public enqueue path, preserve only args/kwargs, and reset all execution context so middleware and telemetry observe a deliberate new enqueue.
-2. Are `deferred:dead_tasks:*` and `ID`/`IDS` environment variables the desired Rake interface, or should the namespace retain the shorter `deferred:dlq:*` form from the initial issue proposal? Recommendation: use `dead_tasks` consistently with the Ruby API.
+- Q-01: If enqueue middleware returns without yielding, should retry retain the dead record or treat the middleware decision as success? Decides: the user. Recommendation: retain the dead record. Public `Task.enqueue` returns `nil` in both cases. The selected sequence cannot detect the difference. Detection remains undecided.
+- Q-02: Should Rake use `deferred:dead_tasks:*` and `ID`/`IDS` environment variables? The initial issue proposes the shorter `deferred:dlq:*` namespace. Decides: the user. Recommendation: use `dead_tasks` consistently with the Ruby API.
+
+- Q-03: How must Disk establish recoverable pending records after interrupted appends or recovery copying? Decides: the user. Recommendation: retain the dead record until recoverability is established. A successful sync alone cannot establish a valid record boundary. The tail policy remains undecided.
+- Q-04: What mutability must retry arguments provide during live execution and after WAL recovery? Decides: the user. Recommendation: preserve immutable inspection values and require equivalent replay behavior. The replay policy remains undecided. Frozen nested values can cause `FrozenError` in middleware or task execution.
 
 ## References
 
