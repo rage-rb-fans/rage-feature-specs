@@ -108,7 +108,9 @@ The collection and final active-entry shape, including the mutation-safe snapsho
 
   Middleware and telemetry exceptions propagate even after pending work exists. The dead record remains intact. Repeating retry can therefore duplicate work.
 
-  Refresh uses current record data and the existing construction behavior. Replay uses the independent mutable decoding required by REQ-13. The entry's original metadata and inspection cache remain unchanged. Retained entries can retry or delete after snapshot cleanup. Entry actions do not retain or change a traversal.
+  Refresh passes `record[:task_class]` and `record[:context]` directly to private helpers without constructing another `DeadTask`. Retry does not copy or validate refreshed display-only metadata. Public lookup and collection entry construction remain unchanged. Replay uses the independent mutable decoding required by REQ-13. The entry's original metadata and inspection cache remain unchanged.
+
+  Retained entries can retry or delete after snapshot cleanup. Entry actions do not retain or change a traversal.
 
   Disk exposes optional `flush`, which delegates to its internal `TasksStorage#sync!`. An adapter may omit `flush` when successful enqueue already completes its ordinary acknowledged persistence operation. Buffered adapters must provide `flush`. The capability check alone does not prove persistence. The contract does not require `flush` on every backend. Do not add no-op flush methods.
 

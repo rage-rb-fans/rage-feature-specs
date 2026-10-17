@@ -21,7 +21,7 @@ This task depends on tasks 03 and 04. [Task 07](07-recoverable-pending-wal-appen
 
   If selected decoding raises `ArgumentError`, `NameError`, or `TypeError`, lookup prints its standard-output diagnostic and returns `nil`. Retry then returns `false` without enqueue or removal. The selected record remains stored and hides older duplicates.
 
-  Other selected decoding and entry-construction failures propagate without older fallback. Other adapters preserve the same public lookup result under their storage contracts. A stale entry must not replay removed or replaced record data from its old snapshot.
+  Other selected decoding failures propagate without older fallback. Public lookup entry-construction failures also propagate unchanged. Other adapters preserve the same public lookup result under their storage contracts. A stale entry must not replay removed or replaced record data from its old snapshot.
 
   Use the refreshed record for class validation and argument decoding. Keep the original entry metadata and inspection cache unchanged.
 - Resolve the exact stored class name without `eval`. Reject a missing constant, a non-Class constant, or a class not including `Rage::Deferred::Task` with a dedicated retry error that identifies the dead-task ID and preserves the record.
@@ -54,7 +54,9 @@ This task depends on tasks 03 and 04. [Task 07](07-recoverable-pending-wal-appen
 
 `DeadTask#retry` refreshes the newest frame-valid current record through `@backend.find_dead_task(@id)`. A missing record returns `false`. A rescued selected failure prints the task 03 diagnostic and returns `nil`; retry then returns `false`. Other selected failures propagate without older fallback.
 
-Reuse the existing record construction for the refreshed record. Validate the refreshed task class. Decode a separate mutable replay context from the refreshed serialized bytes. Reuse `Rage::Deferred::Context` accessors, nil normalization, and the ID-and-cause error boundary. Keep the original inspection graph and cache unchanged. Do not add a service or another validation layer.
+Pass `record[:task_class]` to private `resolve_task_class` and `record[:context]` to private `decode_task_arguments`. Do not construct another `DeadTask` or copy or validate refreshed display-only metadata. Public lookup and collection entry construction remain unchanged.
+
+Validate the refreshed task class. Decode a separate mutable replay context from the refreshed serialized bytes. Reuse `Rage::Deferred::Context` accessors, nil normalization, and the ID-and-cause error boundary. Keep the original inspection graph and cache unchanged. Do not add a service or another validation layer.
 
 The entry then uses this success path:
 
@@ -107,7 +109,7 @@ Place the non-running guard at the top of `Queue#schedule`, not only in the dead
 ## Acceptance criteria
 
 - [ ] Missing, stale, Nil, or rescued-selected-failure retry returns `false`. Retry returns `true` after the documented enqueue, optional flush, and removal sequence. The result does not prove queue acceptance.
-- [ ] Retry re-reads the newest frame-valid record for the exact authoritative outer ID without shared top-level schema validation. Selected `ArgumentError`, `NameError`, and `TypeError` failures print the task 03 diagnostic and return `false`. Other selected decoding and entry-construction failures propagate. No selected failure falls back to an older duplicate.
+- [ ] Retry re-reads the newest frame-valid record for the exact authoritative outer ID without shared top-level schema validation. Selected `ArgumentError`, `NameError`, and `TypeError` failures print the task 03 diagnostic and return `false`. Other selected decoding failures propagate. Public lookup entry-construction failures also propagate unchanged. No selected failure falls back to an older duplicate.
 - [ ] `DeadTask#retry` owns the only retry implementation and reuses task 04's private shared backend. Collection retry delegates through `find_by_id` and `entry.retry`.
 - [ ] Retry resolves and validates the task class without `eval` and preserves the dead record on class or context failure.
 - [ ] Retry uses original positional/keyword arguments through a fresh normal enqueue with reset ID, attempts, context, middleware, and telemetry.
@@ -115,7 +117,7 @@ Place the non-running guard at the top of `Queue#schedule`, not only in the dead
 - [ ] Silent middleware or telemetry suppression still permits flush, the applicable restart warning, removal, and `true` without pending work. Documentation states this risk.
 - [ ] Retry performs public enqueue, optional flush selected through `respond_to?(:flush)`, and exact-ID removal in that order.
 - [ ] Replay uses an independent mutable graph with Marshal-supported aliases and cycles under normal enqueue splat semantics. Immutable inspection values and their cached identities remain unchanged.
-- [ ] Retry refreshes current record data without changing the original entry metadata or inspection cache. Entry actions work after snapshot cleanup.
+- [ ] Retry uses refreshed class and context values directly without constructing another entry or copying or validating refreshed display-only metadata. The original entry metadata and inspection cache remain unchanged. Entry actions work after snapshot cleanup.
 - [ ] Disk flush delegates to `TasksStorage#sync!` for the active WAL and storage directory. Other adapters retain ordinary acknowledged persistence semantics.
 - [ ] An optional flush failure propagates and preserves the dead record. Documentation states the uncertain pending outcome and possible execution before synchronization.
 - [ ] Documentation states that inherited WAL framing, rotation, and recovery defects remain. Successful retry does not establish complete crash-recovery safety.
@@ -135,6 +137,7 @@ Place the non-running guard at the top of `Queue#schedule`, not only in the dead
 - Verify entries use the identical shared backend for refresh, flush, and removal. Verify no action handler or collection reference remains.
 - Verify collection retry delegates through exact lookup to entry retry. Cover removal or replacement between collection lookup and entry refresh.
 - Verify stale entry retry uses current class and arguments while preserving original metadata and cached inspection values.
+- Verify refresh constructs no second entry and does not copy or validate display-only metadata. Preserve public lookup and collection entry-construction behavior.
 - Verify retained entries retry after `first`, `find_by_id`, and block traversal release snapshot resources. Preserve ongoing traversal state.
 - Cover positional-only, keyword-only, mixed, and empty arguments under Ruby 3.3. Verify fresh ID/attempt/context state and enqueue middleware/telemetry execution.
 - Verify unchanged enqueue `nil` returns and signatures for Disk and Nil. Verify retry ignores the enqueue return value.
