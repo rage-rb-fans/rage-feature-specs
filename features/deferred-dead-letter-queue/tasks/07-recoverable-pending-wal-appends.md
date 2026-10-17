@@ -14,7 +14,7 @@ The existing pending WAL appends bytes after unfinished tails. Recovery can reje
 
 This task repairs the existing pending-WAL defect for ordinary enqueue and recovery. It does not repair the dead-task file. This task follows task 01 as deferred independent work. It does not precede or block [task 05](05-retry-dead-tasks.md). It implements REQ-31 and AC-12. Follow [ADR-002](../adr/002-dead-task-retry-lifecycle.md).
 
-This task requires neither task 05's acceptance Boolean nor its optional backend flush. Ordinary enqueue retains timer-based synchronization.
+This task does not require task 05's optional backend flush. Ordinary enqueue retains timer-based synchronization.
 
 ## Requirements
 
