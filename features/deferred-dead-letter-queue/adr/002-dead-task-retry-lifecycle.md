@@ -36,11 +36,13 @@ Use Option C with entry-owned enqueue, optional backend flush, and removal. Cont
 
 Retry is a fresh enqueue of the original positional and keyword arguments under the current application code and configuration. It does not preserve the original logger/user context, task ID, attempt count, delay, or exception object. The entry removes the dead record after public enqueue and optional flush return normally. This sequence does not prove queue acceptance.
 
-`DeadTask#retry` owns exact-ID refresh, class validation, original argument decoding, enqueue, optional flush, and removal. The entry calls `task_class.enqueue(*args, **kwargs)`. The entry ignores the enqueue return value. After enqueue returns normally, the entry calls `@backend.flush` only when `@backend.respond_to?(:flush)`. The entry then calls `@backend.remove_dead_tasks(@id)` and returns `true`. A zero removal count also returns `true`.
+`DeadTask#retry` owns an exact-ID existence check, class validation, original argument decoding, enqueue, optional flush, and removal. The entry calls `task_class.enqueue(*args, **kwargs)`. The entry ignores the enqueue return value. After enqueue returns normally, the entry calls `@backend.flush` only when `@backend.respond_to?(:flush)`. The entry then calls `@backend.remove_dead_tasks(@id)` and returns `true`. A zero removal count also returns `true`.
 
-`DeadTask` privately retains the identical shared backend supplied by its collection. The entry refreshes its exact ID through backend lookup before validating the current class and decoding the current arguments. Refresh preserves the original entry metadata and inspection cache. Entry retry needs no collection, action handler, service, or traversal resources.
+`DeadTask` privately retains the identical shared backend supplied by its collection. The entry calls `@backend.find_dead_task(@id)` only to check existence before enqueue. A missing record returns `false`; existing selected decoding and diagnostic rules still apply. Retry discards the returned record. Retry validates the entry's `@task_class` and decodes the entry's `@__context`.
 
-`DeadTasks#retry(id)` remains a thin `find_by_id` followed by `entry.retry`. A missing lookup returns `false`. The entry performs its own refresh before enqueue. No second retry implementation exists.
+Retry constructs no second entry. The original metadata and inspection cache remain unchanged. Entry retry needs no collection, action handler, service, or traversal resources.
+
+`DeadTasks#retry(id)` remains a thin `find_by_id` followed by `entry.retry`. A missing lookup returns `false`. The entry checks existence before enqueue without replacing the first lookup's class or arguments. No second retry implementation exists.
 
 Disk exposes optional `flush`, which delegates to internal `TasksStorage#sync!`. An adapter may omit `flush` when successful enqueue already completes its ordinary acknowledged persistence operation. A buffered adapter must provide `flush`. The capability check alone does not prove persistence. Adapter-conformance coverage must verify ordinary acknowledged persistence semantics.
 
@@ -62,7 +64,7 @@ Exceptions that escape middleware or telemetry still propagate and preserve the 
 
 ### Mutable replay arguments
 
-Retry loads one independent context graph from the refreshed serialized bytes with ordinary `Marshal.load`, without `freeze: true`. Retry uses existing `Rage::Deferred::Context.get_args`/`.get_kwargs` accessors. Accessor-returned `nil` values normalize to new mutable empty collections. This graph is separate from public frozen inspection values and their cache.
+Retry loads one independent context graph from the entry's serialized bytes with ordinary `Marshal.load`, without `freeze: true`. Retry uses existing `Rage::Deferred::Context.get_args`/`.get_kwargs` accessors. Accessor-returned `nil` values normalize to new mutable empty collections. This graph is separate from public frozen inspection values and their cache.
 
 One decode preserves Marshal-supported shared references and cycles within and across the argument sets. Normal public enqueue splats can create new outer argument containers. Their identities are not preserved. Do not shallow-copy the inspection graph or serialize that decoded graph to construct replay values.
 
@@ -83,6 +85,6 @@ Live retry permits the same nested mutations as ordinary pending-WAL recovery. O
 - A crash or deletion failure after pending persistence can leave both records. A deletion failure raises the retry-specific error with its original cause.
 - Normal enqueue keeps its signature, unconditional `nil` return, middleware, telemetry, and timer batching. Only Disk retry requests explicit WAL synchronization.
 - Silent middleware or telemetry suppression does not retain the dead record. Acceptance detection remains future work. Independent replay decoding preserves immutable inspection. Existing pending-WAL defects remain outside task 05.
-- Concurrent retry/delete operations require operator coordination and do not provide cancellation or exactly-once guarantees.
+- Concurrent retry/delete operations require operator coordination and do not provide cancellation or exactly-once guarantees. The existence check does not reserve the record or compare versions. Retry uses the entry's original class and arguments even after same-ID replacement. Later exact-ID removal can delete that replacement.
 - Out-of-process work that reaches the queue requires server restart for adoption. Silent suppression can produce the same warning without pending work.
 - The public API depends on the private serialized context layout only through `Rage::Deferred::Context` accessors used by the dedicated args/kwargs decoder; proactive compatibility validation is deferred to a future storage-version change.

@@ -92,15 +92,17 @@ The collection and final active-entry shape, including the mutation-safe snapsho
   The collection method requires one String ID or one flat Array of String IDs. It de-duplicates Array members and returns the number of distinct records removed. An empty Array returns `0`. Missing or already-removed IDs are not errors. Zero arguments or multiple arguments raise `ArgumentError`.
 
   A nested Array or another non-String value raises `TypeError`. Invalid input does not change storage. For a large selected set, callers should collect exact IDs with `filter_map` and pass that array to one `dead_tasks.delete(ids)` call; the accumulator retains memory proportional to the selected IDs in addition to the traversal's complete winner index, while Disk performs one locked compaction rather than one per entry.
-- REQ-12: `DeadTask#retry` and `DeadTasks#retry(id)` retry one record. A missing or concurrently deleted ID returns `false`; a completed retry sequence returns `true`. The entry refreshes its exact ID through the shared backend before class validation and argument decoding. A rescued selected lookup failure also returns `false` after the REQ-17 diagnostic. It does not enqueue or remove the stored record.
+- REQ-12: `DeadTask#retry` and `DeadTasks#retry(id)` retry one record. If the exact ID is absent during the existence check, retry returns `false`. A completed retry sequence returns `true`. The entry checks its exact ID through the shared backend before class validation and argument decoding.
+
+  A rescued selected lookup failure also returns `false` after the REQ-17 diagnostic. It does not enqueue or remove the stored record.
 
   `DeadTasks#retry(id)` only calls `find_by_id(id)` and then the returned entry's `retry`; missing lookup returns `false`. The entry owns the only retry implementation. This feature adds no collection-level bulk-retry primitive. Retrying a large set performs a fresh enqueue and an individual dead-store removal for every task. This work may approach quadratic storage cost under task 01's rewrite algorithm. An optimized large-set retry workflow is future work.
-- REQ-13: Retry resolves the stored class name without `eval` and verifies that the class includes `Rage::Deferred::Task`. Retry decodes one independent mutable context graph from the current serialized bytes with ordinary `Marshal.load`. Retry extracts arguments through existing Context accessors and normalizes nil values to mutable empty collections. Public inspection remains frozen and its cache remains unchanged.
+- REQ-13: Retry resolves the stored class name without `eval` and verifies that the class includes `Rage::Deferred::Task`. Retry decodes one independent mutable context graph from the entry's serialized bytes with ordinary `Marshal.load`. Retry extracts arguments through existing Context accessors and normalizes nil values to mutable empty collections. Public inspection remains frozen and its cache remains unchanged.
 
   One decode preserves Marshal-supported shared references and cycles across positional and keyword arguments. Normal public enqueue splats can create new outer containers. The contract does not preserve those outer containers' identities. Ordinary Marshal and custom deserialization behavior still apply. Live replay permits the same nested mutations as ordinary pending-WAL recovery.
 
   Retry invokes normal public enqueue with those original arguments. Public enqueue builds a fresh context and runs current middleware and telemetry. When the call reaches the queue, enqueue creates a fresh task ID and resets attempts. Retry does not recreate the old exception or preserve old logger/user context. Marshal and Context-accessor failures retain the dedicated ID-and-cause error boundary.
-- REQ-14: `DeadTask#retry` owns exact-ID refresh, class validation, original argument decoding, public enqueue, optional flush, and dead-record removal. The entry calls `task_class.enqueue(*args, **kwargs)`. Retry ignores the enqueue return value. After enqueue returns normally, the entry calls `@backend.flush` only when `@backend.respond_to?(:flush)`. The entry then calls `@backend.remove_dead_tasks(@id)` and returns `true`. A zero removal count also returns `true`.
+- REQ-14: `DeadTask#retry` owns an exact-ID existence check, class validation, original argument decoding, public enqueue, optional flush, and dead-record removal. The entry calls `task_class.enqueue(*args, **kwargs)`. Retry ignores the enqueue return value. After enqueue returns normally, the entry calls `@backend.flush` only when `@backend.respond_to?(:flush)`. The entry then calls `@backend.remove_dead_tasks(@id)` and returns `true`. A zero removal count also returns `true`.
 
   The result confirms completion of this sequence, not queue acceptance.
 
@@ -108,7 +110,7 @@ The collection and final active-entry shape, including the mutation-safe snapsho
 
   Middleware and telemetry exceptions propagate even after pending work exists. The dead record remains intact. Repeating retry can therefore duplicate work.
 
-  Refresh passes `record[:task_class]` and `record[:context]` directly to private helpers without constructing another `DeadTask`. Retry does not copy or validate refreshed display-only metadata. Public lookup and collection entry construction remain unchanged. Replay uses the independent mutable decoding required by REQ-13. The entry's original metadata and inspection cache remain unchanged.
+  Retry calls `@backend.find_dead_task(@id)` only to check existence and discards the returned record. Retry resolves the entry's `@task_class` and decodes the entry's `@__context` without constructing another `DeadTask`. Public lookup and collection entry construction remain unchanged. Replay uses the independent mutable decoding required by REQ-13. The entry's original metadata and inspection cache remain unchanged.
 
   Retained entries can retry or delete after snapshot cleanup. Entry actions do not retain or change a traversal.
 
@@ -125,7 +127,9 @@ The collection and final active-entry shape, including the mutation-safe snapsho
   Synchronization confirms current bytes and directory metadata under the existing storage lifecycle. It does not validate or repair framing or remove inherited tail, rotation, and recovery defects. Those defects can still affect crash recovery after successful retry. Task 07 remains deferred and does not block task 05. Retry adds no refusal checks for those inherited defects.
 
   Public enqueue and backend `add_task` signatures remain unchanged. This design adds no backend retry orchestrator, application callback block, retry flag, or shared synchronization parameter.
-- REQ-15: Concurrent retry/delete operations are serialized only for their individual storage calls. Two operators racing to retry the same snapshot can enqueue duplicate work, and a delete racing with a retry does not cancel work already enqueued. Operator documentation must require coordination for mutation commands. Document per-task enqueue calls, repeated dead-store compactions, possible duplicates, and the suppression limitation.
+- REQ-15: Concurrent retry/delete operations are serialized only for their individual storage calls. Two operators racing to retry the same snapshot can enqueue duplicate work, and a delete racing with a retry does not cancel work already enqueued. The existence check does not reserve the record or compare versions. If the same ID has a replacement record, retry uses the entry's original class and arguments. Later exact-ID removal can delete that replacement.
+
+  Operator documentation must require coordination for mutation commands. Document per-task enqueue calls, repeated dead-store compactions, possible duplicates, and the suppression limitation.
 - REQ-16: `Queue#schedule` is a no-op unless `Iodine.running?`. When enqueue reaches the queue outside Iodine, retry persists a new pending WAL record without executing it. Rake, IRB, and other processes without Iodine use this path. After enqueue and optional flush return normally, Rage warns that a server restart is required. Silent suppression also follows this warning path, even when no pending work exists. Periodic adoption of out-of-band/orphan WAL files is deferred and is not part of this feature.
 
 The fresh-enqueue and out-of-process behavior is described in [ADR-002](adr/002-dead-task-retry-lifecycle.md).
@@ -248,7 +252,7 @@ The fresh-enqueue and out-of-process behavior is described in [ADR-002](adr/002-
 
   Coverage verifies forward winner selection and one-at-a-time oldest-first delivery. It includes torn-tail repair with append and rename compaction during enumeration. It covers lazy frozen context decoding through `Rage::Deferred::Context`. Context coverage includes nil normalization, immutable graphs, successful-only caching, and ID-and-cause errors.
 
-  Coverage verifies entry-owned retry, thin collection retry, optional flush, and flush failure without dead-record removal. It verifies fresh record data, unchanged inspection caches, shared backend identity, and actions after snapshot cleanup.
+  Coverage verifies entry-owned retry, thin collection retry, optional flush, and flush failure without dead-record removal. It verifies entry snapshot replay, existence checks, replacement races, unchanged inspection caches, shared backend identity, and actions after snapshot cleanup.
 
   Coverage verifies unchanged enqueue `nil` returns for Disk and Nil. It verifies ignored return values, silent middleware and telemetry suppression, continued removal, and the applicable restart warning. It covers exceptions before and after pending work exists. It verifies mutable replay aliases and cycles, normal splat behavior, stable frozen inspection caches, and live/recovered mutability.
 
