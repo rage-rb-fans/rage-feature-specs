@@ -14,15 +14,15 @@ Issue #369 explicitly deferred periodic adoption of WAL files created out of ban
 
 ### Option A: Remove the dead record, then enqueue
 
-This prevents two visible copies, but an enqueue failure or crash permanently loses the only recoverable copy. It violates the feature's at-least-once priority.
+This prevents two visible copies, but an enqueue failure or crash permanently loses the only recoverable copy. It removes the source before the enqueue attempt.
 
 ### Option B: Replay the serialized internal context, then remove
 
 Calling the queue directly can preserve logger and user context and reuse internal values, but bypasses the public enqueue API, enqueue middleware, and enqueue telemetry. It couples the public feature to the private context layout.
 
-### Option C: Perform a fresh public enqueue, confirm persistence, then remove
+### Option C: Perform a fresh public enqueue, flush if available, then remove
 
-Resolve the stored task class and decode args/kwargs. The entry calls normal public `enqueue`. This creates a new task ID and context, resets attempts, and runs current middleware and telemetry. The entry calls optional backend `flush` before deleting the dead record. Disk requires explicit WAL synchronization because normal enqueue uses timer-based synchronization.
+Resolve the stored task class and decode args/kwargs. The entry calls normal public `enqueue`. Public enqueue builds a fresh context and runs current middleware and telemetry. When the call reaches the queue, enqueue creates a new task ID and resets attempts. The entry calls optional backend `flush` before deleting the dead record. Disk requires explicit WAL synchronization because normal enqueue uses timer-based synchronization.
 
 A deletion failure can leave both copies. Concurrent operators can enqueue duplicates.
 
@@ -34,9 +34,9 @@ Workers periodically discover WALs created by Rake or console processes. This im
 
 Use Option C with entry-owned enqueue, optional backend flush, and removal. Continue to defer Option D. This ADR remains proposed.
 
-Retry is a fresh enqueue of the original positional and keyword arguments under the current application code and configuration. It does not preserve the original logger/user context, task ID, attempt count, delay, or exception object. The entry removes the dead record only after enqueue and persistence confirmation succeed.
+Retry is a fresh enqueue of the original positional and keyword arguments under the current application code and configuration. It does not preserve the original logger/user context, task ID, attempt count, delay, or exception object. The entry removes the dead record after public enqueue and optional flush return normally. This sequence does not prove queue acceptance.
 
-`DeadTask#retry` owns exact-ID refresh, class validation, original argument decoding, enqueue, optional flush, and removal. The entry calls `task_class.enqueue(*args, **kwargs)`. If enqueue returns `false`, retry retains the dead record and returns `false`. After a `true` return, the entry calls `@backend.flush` only when `@backend.respond_to?(:flush)`. After persistence confirmation, the entry calls `@backend.remove_dead_tasks(@id)` and returns `true`. A zero removal count also returns `true`.
+`DeadTask#retry` owns exact-ID refresh, class validation, original argument decoding, enqueue, optional flush, and removal. The entry calls `task_class.enqueue(*args, **kwargs)`. The entry ignores the enqueue return value. After enqueue returns normally, the entry calls `@backend.flush` only when `@backend.respond_to?(:flush)`. The entry then calls `@backend.remove_dead_tasks(@id)` and returns `true`. A zero removal count also returns `true`.
 
 `DeadTask` privately retains the identical shared backend supplied by its collection. The entry refreshes its exact ID through backend lookup before validating the current class and decoding the current arguments. Refresh preserves the original entry metadata and inspection cache. Entry retry needs no collection, action handler, service, or traversal resources.
 
@@ -50,17 +50,15 @@ Disk synchronizes the currently active WAL file, then the storage directory. Fai
 
 Synchronization confirms current bytes and directory metadata under the existing storage lifecycle. It does not validate or repair framing or remove inherited tail, rotation, and recovery defects. Task 05 accepts those limits. A successful retry therefore does not establish complete crash-recovery safety. Retry adds no refusal checks for inherited defects.
 
-### Enqueue acceptance
+### Deferred enqueue-acceptance detection
 
-Public `Task.enqueue` returns a Boolean instead of unconditional `nil`. It returns `true` only when its intended `Queue#enqueue` call completes normally. It returns `false` when middleware prevents that call. This contract applies to ordinary enqueue with both Disk and Nil. A storage ID is unnecessary for acceptance.
+Keep public `Task.enqueue` unchanged. Preserve its unconditional `nil` return, signature, argument handling, middleware, telemetry, and multiple-yield behavior for Disk and Nil. Retry ignores the return value. Do not add acceptance bookkeeping, retry flags, receipt objects, or context hooks.
 
-Use a per-call local initialized to `false`. Set the local to `true` immediately after the intended queue call returns inside the existing middleware block. Return the local after middleware and telemetry complete. Ignore their arbitrary return values. Nested or unrelated enqueues cannot establish acceptance for the outer call. Do not add shared state, a receipt object, or a retry flag.
+A normal enqueue return does not prove that the intended queue call occurred. Middleware or telemetry can silently suppress that call. Retry still performs optional flush, emits the applicable restart warning, removes the dead record, and returns `true`. No pending work need exist. This accepted limitation can lose the task and has no at-least-once guarantee.
 
-If middleware yields multiple times, acceptance means at least one intended queue call completed and no exception escapes. Existing multiple-enqueue effects remain unchanged. The Boolean does not promise exactly-once enqueue.
+Defer enqueue-acceptance detection and suppression retention to a future improvement. The retry Boolean reports completion of the enqueue/flush/removal sequence, not queue acceptance. This decision avoids a public enqueue change and ordinary enqueue bookkeeping.
 
-Exceptions that escape middleware or telemetry still propagate. A post-acceptance exception leaves the dead record intact even though pending work can exist. A repeated retry can duplicate that work. Suppressed retry performs no flush, removal, or restart-required warning.
-
-The Boolean changes a public return value. Callers that expect `nil` must adapt. Public signatures, argument handling, middleware, telemetry, and ordinary timer batching remain unchanged. All enqueue calls incur local acceptance bookkeeping.
+Exceptions that escape middleware or telemetry still propagate and preserve the dead record. Pending work can already exist. A repeated retry can duplicate that work.
 
 ### Mutable replay arguments
 
@@ -74,17 +72,17 @@ Live retry permits the same nested mutations as ordinary pending-WAL recovery. O
 
 [Task 07](../tasks/07-recoverable-pending-wal-appends.md) remains independent future work. It does not precede or block task 05. Task 05 adds only the explicit active-WAL and directory synchronization required by retry. It does not change tail repair, short-write handling, rotation, recovery copying, source cleanup, or timer-failure policy. Existing WAL defects can still affect crash recovery after the dead record is removed. This is an accepted scope limitation, not an unresolved implementation gate.
 
-`Queue#schedule` first checks `Iodine.running?` and performs no scheduling work when false. Accepted retry outside a running server writes and synchronizes the pending WAL before dead-record removal. Retry emits the restart-required warning after accepted persistence succeeds. Periodic orphan-WAL adoption belongs to a future feature.
+`Queue#schedule` first checks `Iodine.running?` and performs no scheduling work when false. When enqueue reaches the queue outside Iodine, retry writes and synchronizes pending work without scheduling it. Retry emits the restart-required warning after normal enqueue and optional flush, including silent suppression. Periodic orphan-WAL adoption belongs to a future feature.
 
 ## Consequences
 
 - Enqueue middleware and telemetry can observe and reject an operator retry using current code.
 - Class renames, removed task classes, and undecodable arguments prevent retry but not metadata inspection.
-- Retry has at-least-once failure behavior. Execution can start before explicit synchronization completes.
+- Pending work can execute before explicit synchronization completes. Silent suppression can delete the source without creating pending work.
 - An optional flush failure propagates and preserves the dead record. The pending outcome remains uncertain. Repeating retry can duplicate work.
-- A crash or deletion failure after confirmed persistence can leave both records. A deletion failure raises the retry-specific error with its original cause.
-- Normal enqueue keeps its signatures, middleware, telemetry, and timer batching. Its return changes from `nil` to the acceptance Boolean. Only Disk retry requests explicit WAL synchronization.
-- Middleware suppression retains the dead record and returns `false`. Independent replay decoding preserves immutable inspection. Existing pending-WAL defects remain outside task 05.
+- A crash or deletion failure after pending persistence can leave both records. A deletion failure raises the retry-specific error with its original cause.
+- Normal enqueue keeps its signature, unconditional `nil` return, middleware, telemetry, and timer batching. Only Disk retry requests explicit WAL synchronization.
+- Silent middleware or telemetry suppression does not retain the dead record. Acceptance detection remains future work. Independent replay decoding preserves immutable inspection. Existing pending-WAL defects remain outside task 05.
 - Concurrent retry/delete operations require operator coordination and do not provide cancellation or exactly-once guarantees.
-- Out-of-process retry is durable but not immediate. Operators must restart the Rage server before the orphaned WAL is adopted.
+- Out-of-process work that reaches the queue requires server restart for adoption. Silent suppression can produce the same warning without pending work.
 - The public API depends on the private serialized context layout only through `Rage::Deferred::Context` accessors used by the dedicated args/kwargs decoder; proactive compatibility validation is deferred to a future storage-version change.
