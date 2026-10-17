@@ -12,7 +12,7 @@ Let trusted operators retry recoverable dead tasks through the Ruby API with fre
 
 Task 02 establishes passive entries. Task 03 adds exact lookup and safe argument decoding. Task 04 gives active entries the shared backend privately and adds direct deletion. Task 01 supplies durable pending/dead storage but no atomic transaction spans the two files.
 
-This task depends on both tasks 03 and 04. It implements REQ-12 through REQ-16, retry-related REQ-18 through REQ-20 and REQ-24 through REQ-26, plus AC-05, AC-08, and the retry/concurrency portion of AC-11. Follow [ADR-001](../adr/001-public-dead-task-object-model.md) and [ADR-002](../adr/002-dead-task-retry-lifecycle.md).
+This task depends on tasks 03, 04, and [07](07-recoverable-pending-wal-appends.md). Task 07 repairs the existing pending-WAL boundary defect before retry can remove a durable source record. Task 05 implements REQ-12 through REQ-16, retry-related REQ-18 through REQ-20, REQ-24 through REQ-26, and REQ-30, plus AC-05, AC-08, and the retry/concurrency portion of AC-11. Follow [ADR-001](../adr/001-public-dead-task-object-model.md) and [ADR-002](../adr/002-dead-task-retry-lifecycle.md).
 
 ## Requirements
 
@@ -25,9 +25,15 @@ This task depends on both tasks 03 and 04. It implements REQ-12 through REQ-16, 
 
   Use the refreshed record for class validation and argument decoding. Keep the original entry metadata and inspection cache unchanged.
 - Resolve the exact stored class name without `eval`. Reject a missing constant, a non-Class constant, or a class not including `Rage::Deferred::Task` with a dedicated retry error that identifies the dead-task ID and preserves the record.
-- Decode the original positional and keyword arguments using task 03's frozen Marshal load, `Rage::Deferred::Context` accessors, nil normalization, and successful-only cache. Marshal deserialization failures, missing referenced constants, or raised accessor failures use the documented dead-task context-deserialization/retry error and leave the record intact. Retry does not add context shape, minimum-length, or extracted-value type validation that task 03 deliberately defers to a future storage-version change.
+- Decode one independent replay context from the refreshed record's serialized context bytes with ordinary `Marshal.load`, without `freeze: true`. Extract args/kwargs through `Rage::Deferred::Context` accessors. Normalize accessor-returned `nil` to new mutable empty collections. Preserve Marshal-supported shared references and cycles across both argument sets through that single decode. Normal public enqueue splats may create new outer argument containers. This contract does not preserve those outer containers' identities.
+- Keep the public inspection graph frozen and its successful cache unchanged. Do not reuse or shallow-copy that graph for replay. Do not serialize the already decoded inspection graph to make a copy. Replay permits the same nested mutations as ordinary pending-WAL recovery, subject to ordinary Marshal and custom deserialization behavior.
+- Marshal and context-accessor exceptions use the dedicated context-deserialization error with the dead-task ID and original `cause`. Custom deserialization failures follow the same boundary. Keep the dead record intact. Do not add context shape, minimum-length, or extracted-value type validation.
+- Change public `Task.enqueue` to return `true` when its intended `Queue#enqueue` call completes normally. Return `false` when middleware prevents that call. This Boolean replaces the current unconditional `nil` return. Preserve the method signature, middleware arguments, and telemetry. Exceptions that escape enqueue continue to propagate.
+- Record acceptance in a per-call local immediately after the intended queue call returns. Ignore arbitrary middleware and telemetry return values. An unrelated or nested enqueue cannot establish acceptance of the outer task. Acceptance does not depend on a storage ID. Ordinary enqueue with the Nil backend follows the same Boolean contract.
+- If middleware yields multiple times, acceptance means at least one intended queue call completed and no exception escapes. Preserve existing multiple-enqueue effects; this Boolean does not promise exactly-once enqueue.
+- If public enqueue returns `false`, retry returns `false` and retains the dead record. Do not flush, remove, or emit the restart-required warning. If middleware or telemetry raises after queue acceptance, propagate the exception and retain the dead record. Already accepted work can exist, so a repeated retry can duplicate work.
 - Invoke the resolved task class's normal public `enqueue(*args, **kwargs)` path. Create a fresh task ID and context, reset attempts, and run current enqueue middleware and enqueue telemetry. Do not reconstruct the old exception or preserve the old task ID, delay, scheduled time, logger context, or user context.
-- `DeadTask#retry` owns lookup, class validation, argument decoding, public enqueue, optional flush, and removal. After enqueue returns, the entry calls `@backend.flush` only when `@backend.respond_to?(:flush)`. The entry then calls `@backend.remove_dead_tasks(@id)` and returns `true`. The entry does not branch on backend class.
+- `DeadTask#retry` owns lookup, class validation, argument decoding, public enqueue, optional flush, and removal. After enqueue returns `true`, the entry calls `@backend.flush` only when `@backend.respond_to?(:flush)`. The entry then calls `@backend.remove_dead_tasks(@id)` and returns `true`. The entry does not branch on backend class.
 - Disk exposes optional `flush`, which delegates to its internal `TasksStorage#sync!`. An adapter may omit `flush` only when successful enqueue already guarantees durable, recoverable pending work. A buffered adapter must implement `flush` and establish that guarantee before returning. Nil requires no flush method and returns `false` before enqueue.
 - Class resolution, decoding, middleware, backpressure, or pending-storage failure leaves the dead record unchanged. An optional flush failure propagates unchanged and leaves the dead record intact. The pending write has an uncertain outcome. Execution can start before synchronization finishes. A repeated retry can therefore duplicate work.
 - After enqueue and backend persistence confirmation succeed, remove the exact dead-task ID through task 01's backend primitive. If removal raises, raise a retry-specific error stating that work may exist in both stores. Retain the removal exception as `cause`. Never claim rollback of already-persisted work.
@@ -35,22 +41,23 @@ This task depends on both tasks 03 and 04. It implements REQ-12 through REQ-16, 
 - Concurrent retries are not exactly-once. Two callers racing from valid snapshots can enqueue duplicate work; a delete racing with retry cannot cancel work already enqueued. Document operator coordination and do not add a lock around application middleware/user code.
 - Keep `entry.retry` and `dead_tasks.each(&:retry)` as immediate, mutation-safe convenience operations for individual entries or small sets. Retrying a large set necessarily performs a fresh enqueue per task and, under task 01, an individual lookup/removal with a possible full dead-store compaction per success; aggregate storage work may approach O(N²). This feature adds no collection-level bulk-retry primitive. Operators must coordinate large retry runs and proceed with explicit awareness of their cost and at-least-once duplicate behavior; optimized large-set retry is future work.
 - Add an early `Iodine.running?` guard to `Queue#schedule`. When false, it must not call `Iodine.run_after`, change backlog counters, create a Fiber, or touch Iodine task counters; `Queue#enqueue` still persists the pending record before the scheduling no-op.
-- Detect retry outside a running Iodine process. After pending persistence succeeds, emit one stderr warning. Identify only the dead-task ID and state that server restart is required. Do not print args, kwargs, context, or exception text. This warning differs from task 03's selected decoding diagnostic, which can occur before enqueue.
+- Detect retry outside a running Iodine process. After accepted enqueue and pending persistence succeed, emit one stderr warning. Identify only the dead-task ID and state that server restart is required. Do not print args, kwargs, context, or exception text. This warning differs from task 03's selected decoding diagnostic, which can occur before enqueue.
 - Do not implement orphan-WAL polling/adoption or contact a running worker. The out-of-process WAL remains unavailable to existing workers until restart, as accepted in issue #369.
-- Nil retry returns `false` without class resolution, context decoding, scheduling, files, or background work.
+- Nil dead-task retry returns `false` without class resolution, context decoding, scheduling, files, or background work. Ordinary Nil enqueue still follows the acceptance Boolean contract.
 - Task 06's multi-ID Rake retry invokes this single-ID operation independently for every requested ID and reports partial results; it is not an atomic or optimized bulk-retry primitive.
-- Fully document return values, class and decode errors, fresh enqueue semantics, partial success, concurrency, and restart requirements with YARD. Include task 03's unsanitized selected-failure diagnostic and the resulting `false` return.
+- Document the new enqueue Boolean, suppressed retry, mutable replay, errors, partial success, concurrency, and restart requirements with YARD.
+- Update enqueue documentation and the changelog for the `nil`-to-Boolean compatibility change. Include task 03's unsanitized selected-failure diagnostic and the resulting `false` return.
 
 ## Design
 
 `DeadTask#retry` refreshes the newest frame-valid current record through `@backend.find_dead_task(@id)`. A missing record returns `false`. A rescued selected failure prints the task 03 diagnostic and returns `nil`; retry then returns `false`. Other selected failures propagate without older fallback.
 
-Reuse the existing record construction and argument decoder for the refreshed record. Validate the refreshed task class and decode the refreshed arguments. Do not use the original entry's cached arguments. Do not change that entry's metadata or inspection cache. Do not add a service or another validation layer.
+Reuse the existing record construction for the refreshed record. Validate the refreshed task class. Decode a separate mutable replay context from the refreshed serialized bytes. Reuse `Rage::Deferred::Context` accessors, nil normalization, and the ID-and-cause error boundary. Keep the original inspection graph and cache unchanged. Do not add a service or another validation layer.
 
 The entry then uses this success path:
 
 ```ruby
-task_class.enqueue(*args, **kwargs)
+return false unless task_class.enqueue(*args, **kwargs)
 @backend.flush if @backend.respond_to?(:flush)
 @backend.remove_dead_tasks(@id)
 true
@@ -60,11 +67,13 @@ true
 
 Disk implements `flush` by calling `@tasks_storage.sync!`. `respond_to?(:flush)` selects the optional operation; the check alone does not prove persistence. An adapter without `flush` must confirm durable, recoverable persistence through successful enqueue. Buffered adapters must provide `flush`. Database adapters with that enqueue guarantee need no flush method.
 
-The implementation also preserves the specified removal-error wrapper and restart warning. The success path does not detect middleware that returns without yielding. See Q-01. The existing WAL tail dependency and replay argument mutability also remain open. See Q-03 and Q-04.
+`Task.enqueue` initializes a local acceptance result to `false` for each call. Inside the existing enqueue middleware block, the method records `true` only after the intended queue call returns normally. The method returns that local result after middleware and telemetry complete. It does not use their return values as acceptance. An exception prevents a normal Boolean return. No acceptance state is shared between Fibers or calls.
+
+The implementation also preserves the specified removal-error wrapper and restart warning. A suppressed enqueue returns before either operation. Task 07 establishes recoverable pending-WAL record boundaries for ordinary enqueue and recovery. This task uses that prerequisite; it does not repair the pending WAL inside `DeadTask#retry`.
 
 `TasksStorage#sync!` is internal to Disk. The method confirms file and directory durability for the retry's pending work across WAL rotation and recovery. The method must cover the relevant WAL files, even if enqueue changes the active WAL. Disk must keep each required file open until synchronization finishes. Disk must retain source WAL data until its replacement is confirmed durable. Elapsed `fsync_frequency` alone must not authorize source-file cleanup.
 
-The timer continues to batch ordinary WAL synchronization. Explicit synchronization must not clear the dirty state of newer writes. Failed timer synchronization must leave unsynchronized writes eligible for another attempt. Ordinary enqueue gains no retry-specific synchronization or retry-state checks.
+Task 07 preserves timer batching, failed-sync retry, and safe rotation/recovery cleanup. This task adds the explicit synchronization barrier for retry. Explicit synchronization must not clear the dirty state of newer writes. Ordinary enqueue adds only per-call acceptance bookkeeping for this contract. It gains no retry-specific synchronization, backend type check, or shared retry state.
 
 The shared backend contract does not require `fsync` or filesystem operations. Other adapters may omit `flush` under the enqueue persistence guarantee above. Do not require `flush` on every backend. Do not add no-op flush methods. Nil returns `false` without work. Retry does not use an application callback block.
 
@@ -77,7 +86,7 @@ Place the non-running guard at the top of `Queue#schedule`, not only in the dead
 - Never remove a dead record before enqueue and backend persistence confirmation succeed.
 - Keep WAL synchronization inside Disk, behind optional `flush`. Preserve the public `Task.enqueue` and shared enqueue/`add_task` signatures.
 - Keep retry orchestration only in `DeadTask#retry`. Do not add backend `retry_dead_task` or `finalize_dead_task_retry` methods.
-- Do not add retry flags, `RetryAttempt`, enqueue-context hooks, or shared `sync:`/`durable:` enqueue parameters.
+- Use only the per-call local acceptance result. Do not add retry flags, receipt objects, context hooks, or shared synchronization parameters.
 - Preserve Deferred's at-least-once model; do not promise exactly-once replay or transactional rollback.
 - Do not reuse the original task ID or serialized internal context.
 - Preserve the selected fresh-enqueue behavior without the original logger/user context.
@@ -96,7 +105,10 @@ Place the non-running guard at the top of `Queue#schedule`, not only in the dead
 - [ ] `DeadTask#retry` owns the only retry implementation and reuses task 04's private shared backend. Collection retry delegates through `find_by_id` and `entry.retry`.
 - [ ] Retry resolves and validates the task class without `eval` and preserves the dead record on class or context failure.
 - [ ] Retry uses original positional/keyword arguments through a fresh normal enqueue with reset ID, attempts, context, middleware, and telemetry.
-- [ ] The entry performs public enqueue, optional flush selected through `respond_to?(:flush)`, and exact-ID removal in that order.
+- [ ] Public enqueue returns the specified Boolean for Disk and Nil without changing its signature. Unrelated enqueues and middleware return values cannot establish acceptance.
+- [ ] Suppressed retry returns `false`, retains the dead record, and performs no flush, removal, or restart warning.
+- [ ] Accepted retry performs public enqueue, optional flush selected through `respond_to?(:flush)`, and exact-ID removal in that order.
+- [ ] Replay uses an independent mutable graph with Marshal-supported aliases and cycles under normal enqueue splat semantics. Immutable inspection values and their cached identities remain unchanged.
 - [ ] Retry refreshes current record data without changing the original entry metadata or inspection cache. Entry actions work after snapshot cleanup.
 - [ ] Disk flush delegates to `TasksStorage#sync!`. An adapter omits flush only when successful enqueue guarantees durable, recoverable pending work.
 - [ ] An optional flush failure propagates and preserves the dead record. Documentation states the uncertain pending outcome and possible execution before synchronization.
@@ -109,13 +121,6 @@ Place the non-running guard at the top of `Queue#schedule`, not only in the dead
 - [ ] Out-of-process retry warns without leaking stored payloads and does not claim execution before server restart.
 - [ ] Public retry/error APIs have complete YARD documentation.
 
-## Open questions
-
-- Q-01: If enqueue middleware returns without yielding, should retry retain the dead record or treat the middleware decision as success? Decides: the user. Recommendation: retain the dead record. Public `Task.enqueue` returns `nil` in both cases. The selected sequence cannot detect the difference. Detection remains undecided.
-
-- Q-03: How must retry handle the existing WAL recoverability risk after interrupted appends or recovery copying? Decides: the user. Recommendation: retain the dead record until recoverability is established. A successful sync alone cannot establish a valid record boundary. The WAL dependency remains unresolved. This task specifies no separate WAL feature or repair algorithm.
-- Q-04: What mutability must retry arguments provide during live execution and after WAL recovery? Decides: the user. Recommendation: preserve immutable inspection values and require equivalent replay behavior. The replay policy remains undecided. Frozen nested values can cause `FrozenError` in middleware or task execution.
-
 ## Verification
 
 - Add focused collection and entry specs for success, missing, stale, Nil, class, and context cases. Verify exact return and error types.
@@ -125,11 +130,19 @@ Place the non-running guard at the top of `Queue#schedule`, not only in the dead
 - Verify collection retry delegates through exact lookup to entry retry. Cover removal or replacement between collection lookup and entry refresh.
 - Verify stale entry retry uses current class and arguments while preserving original metadata and cached inspection values.
 - Verify retained entries retry after `first`, `find_by_id`, and block traversal release snapshot resources. Preserve ongoing traversal state.
-- Cover positional-only, keyword-only, mixed, and empty arguments under Ruby 3.3, plus fresh ID/attempt/context state and enqueue middleware/telemetry execution.
+- Cover positional-only, keyword-only, mixed, and empty arguments under Ruby 3.3. Verify fresh ID/attempt/context state and enqueue middleware/telemetry execution.
+- Verify exact enqueue Booleans for accepted and suppressed calls, including Disk and Nil. Do not infer acceptance from backend IDs.
+- Cover middleware suppression with unrelated nested enqueue, multiple yields, arbitrary truthy/falsy returns, and same-process Fiber interleaving. Verify acceptance belongs to the intended call.
+- Cover middleware and telemetry errors before and after queue acceptance. Verify retained source records and possible pending work after acceptance.
+- Verify suppressed retry performs no flush, removal, or restart warning.
+- Mutate nested replay values in enqueue middleware, perform middleware, and `perform`. Compare live execution with pending-WAL recovery.
+- Cover nested aliases and cycles within and across args/kwargs. Preserve normal splat behavior for outer containers. Verify replay changes cannot mutate inspection values or change cached identities.
+- Cover ordinary and custom Marshal failures with the dedicated ID-and-cause boundary and retained source record.
 - Verify entry-owned enqueue, optional flush, and removal order. Verify Disk flush delegates to `TasksStorage#sync!`.
 - Add adapter-conformance coverage for buffered persistence with flush and durable enqueue without flush. Verify persistence semantics, not only method presence.
 - Verify flush failure prevents removal and propagates unchanged. Verify Nil performs no enqueue or flush. Do not require no-op flush methods.
 - Cover pending-store, middleware, backpressure, schedule, synchronization, and removal failures. Verify retained dead records, uncertain pending outcomes, and preserved removal-error causes.
+- Verify task 07's repaired pending WAL can recover an accepted retry after synchronization.
 - Verify file and directory synchronization before deletion, including retry without a running timer. Cover rotation during enqueue and recovery-source cleanup after synchronization failure.
 - Verify timer batching after explicit synchronization. Cover failed timer synchronization and newer writes during synchronization without lost dirty state.
 - Exercise concurrent retry/retry and retry/delete interleavings to document possible duplicates without unrelated loss or storage-locking around application code.

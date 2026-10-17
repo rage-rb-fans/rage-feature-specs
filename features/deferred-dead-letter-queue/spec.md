@@ -95,14 +95,20 @@ The collection and final active-entry shape, including the mutation-safe snapsho
 - REQ-12: `DeadTask#retry` and `DeadTasks#retry(id)` retry one record. A missing or concurrently deleted ID returns `false`; a successful retry returns `true`. The entry refreshes its exact ID through the shared backend before class validation and argument decoding. A rescued selected lookup failure also returns `false` after the REQ-17 diagnostic. It does not enqueue or remove the stored record.
 
   `DeadTasks#retry(id)` only calls `find_by_id(id)` and then the returned entry's `retry`; missing lookup returns `false`. The entry owns the only retry implementation. This feature adds no collection-level bulk-retry primitive. Retrying a large set performs a fresh enqueue and an individual dead-store removal for every task. This work may approach quadratic storage cost under task 01's rewrite algorithm. An optimized large-set retry workflow is future work.
-- REQ-13: Retry resolves the stored class name without `eval`, verifies that it is a class including `Rage::Deferred::Task`, deserializes the original arguments, and invokes the normal public enqueue path. This creates a fresh context and task ID, resets the attempt count, runs enqueue middleware and enqueue telemetry again, and does not recreate the old exception.
-- REQ-14: `DeadTask#retry` owns exact-ID refresh, class validation, original argument decoding, public enqueue, optional flush, and dead-record removal. The entry calls `task_class.enqueue(*args, **kwargs)`. The entry then calls `@backend.flush` only when `@backend.respond_to?(:flush)`. After persistence confirmation, the entry calls `@backend.remove_dead_tasks(@id)` and returns `true`. A zero removal count also returns `true`.
+- REQ-13: Retry resolves the stored class name without `eval` and verifies that the class includes `Rage::Deferred::Task`. Retry decodes one independent mutable context graph from the current serialized bytes with ordinary `Marshal.load`. Retry extracts arguments through existing Context accessors and normalizes nil values to mutable empty collections. Public inspection remains frozen and its cache remains unchanged.
 
-  Refresh uses current record data and the existing construction and argument decoding behavior. The entry's original metadata and inspection cache remain unchanged. Retained entries can retry or delete after snapshot cleanup. Entry actions do not retain or change a traversal.
+  One decode preserves Marshal-supported shared references and cycles across positional and keyword arguments. Normal public enqueue splats can create new outer containers. The contract does not preserve those outer containers' identities. Ordinary Marshal and custom deserialization behavior still apply. Live replay permits the same nested mutations as ordinary pending-WAL recovery.
+
+  Retry invokes normal public enqueue with those original arguments. Enqueue creates a fresh context and task ID, resets attempts, and runs current middleware and telemetry. Retry does not recreate the old exception or preserve old logger/user context. Marshal and Context-accessor failures retain the dedicated ID-and-cause error boundary.
+- REQ-14: `DeadTask#retry` owns exact-ID refresh, class validation, original argument decoding, public enqueue, optional flush, and dead-record removal. The entry calls `task_class.enqueue(*args, **kwargs)`. If enqueue returns `false`, retry returns `false` and retains the dead record. After enqueue returns `true`, the entry calls `@backend.flush` only when `@backend.respond_to?(:flush)`. After persistence confirmation, the entry calls `@backend.remove_dead_tasks(@id)` and returns `true`. A zero removal count also returns `true`.
+
+  Suppression performs no flush, removal, or restart-required warning. Middleware and telemetry exceptions propagate even after queue acceptance. The dead record remains intact, but accepted pending work can exist. Repeating retry can therefore duplicate work.
+
+  Refresh uses current record data and the existing construction behavior. Replay uses the independent mutable decoding required by REQ-13. The entry's original metadata and inspection cache remain unchanged. Retained entries can retry or delete after snapshot cleanup. Entry actions do not retain or change a traversal.
 
   Disk exposes optional `flush`, which delegates to its internal `TasksStorage#sync!`. An adapter may omit `flush` only when successful enqueue already guarantees durable, recoverable pending work. Buffered adapters must provide `flush`. The capability check alone does not prove persistence. The contract does not require `flush` on every backend. Do not add no-op flush methods.
 
-  Nil returns `false` before enqueue or flush.
+  Dead-task retry with Nil returns `false` before enqueue or flush.
 
   Class resolution, context deserialization, middleware, backpressure, or pending-storage failure leaves the dead task intact. An optional flush failure propagates unchanged and preserves the dead record. The pending outcome remains uncertain. Execution can start before synchronization completes. Repeating retry can duplicate work.
 
@@ -110,9 +116,9 @@ The collection and final active-entry shape, including the mutation-safe snapsho
 
   Disk's internal synchronization confirms relevant WAL file and directory durability across rotation and recovery. Disk retains required descriptors and source data until replacement durability is confirmed. Elapsed `fsync_frequency` alone must not authorize source-file cleanup. The timer retains ordinary batching and retries unsynchronized writes after failure. Explicit synchronization must not clear newer dirty state.
 
-  Public enqueue and backend `add_task` signatures remain unchanged. This design adds no backend retry orchestrator, application callback block, retry flag, or shared synchronization parameter.
+  Task 05 depends on task 07's pending-WAL boundary and source-lifetime guarantees. Public enqueue and backend `add_task` signatures remain unchanged. This design adds no backend retry orchestrator, application callback block, retry flag, or shared synchronization parameter.
 - REQ-15: Concurrent retry/delete operations are serialized only for their individual storage calls. Two operators racing to retry the same snapshot can enqueue duplicate work, and a delete racing with a retry does not cancel work already enqueued. Operator documentation must require coordination for mutation commands and warn that large retry sets combine necessary per-task enqueues, repeated dead-store compactions, and at-least-once duplication risk.
-- REQ-16: `Queue#schedule` is a no-op unless `Iodine.running?`. A retry from Rake, IRB, or another process without a running Iodine loop therefore persists a new pending WAL record but does not execute it. Rage emits an explicit warning that a server restart is required. Periodic adoption of out-of-band/orphan WAL files is deferred and is not part of this feature.
+- REQ-16: `Queue#schedule` is a no-op unless `Iodine.running?`. An accepted retry outside a running Iodine loop persists a new pending WAL record without executing it. Rake, IRB, and other processes without Iodine use this path. After accepted persistence, Rage warns that a server restart is required. A suppressed retry produces no restart-required warning. Periodic adoption of out-of-band/orphan WAL files is deferred and is not part of this feature.
 
 The fresh-enqueue and out-of-process behavior is described in [ADR-002](adr/002-dead-task-retry-lifecycle.md).
 
@@ -140,15 +146,17 @@ The fresh-enqueue and out-of-process behavior is described in [ADR-002](adr/002-
 ### Rake/operator interface
 
 - REQ-21: Thin Rake tasks expose list, show, retry, and delete through the Ruby API. The proposed names are `deferred:dead_tasks:list`, `deferred:dead_tasks:show`, `deferred:dead_tasks:retry`, and `deferred:dead_tasks:delete`.
-- REQ-22: `list` prints bounded summaries oldest-first in the collection's order and omits arguments and backtraces. `show` requires one `ID` and prints the full inspectable record, including arguments and backtrace, with a sensitive-data warning. `retry` and `delete` accept comma-separated `IDS`, process each ID independently, print a per-ID outcome and final totals, and exit non-zero after reporting all failures.
-- REQ-23: Rake tasks boot the application environment, contain no storage logic, and behave consistently for Disk and Nil backends. Out-of-process retry output prominently states that the pending task requires a Rage server restart.
+- REQ-22: `list` prints bounded summaries oldest-first in the collection's order and omits arguments and backtraces. `show` requires one `ID` and prints the full inspectable record, including arguments and backtrace, with a sensitive-data warning. `retry` and `delete` accept comma-separated `IDS` and process each ID independently. Both print per-ID outcomes and totals, then exit non-zero after all failures are reported.
+
+  Retry totals use succeeded/not-retried/failed; delete totals use succeeded/missing/failed. Retry `false` reports not retried without claiming missing versus suppressed work. Non-exception outcomes preserve the existing exit policy.
+- REQ-23: Rake tasks boot the application environment, contain no storage logic, and behave consistently for Disk and Nil backends. After accepted persistence, out-of-process retry output prominently states that the pending task requires a Rage server restart.
 
 ### Compatibility and performance
 
-- REQ-24: The feature is additive, preserves `config.deferred.backend` and its existing options, and requires no new configuration. It supports Rage's minimum Ruby version, 3.3.0.
+- REQ-24: The feature preserves `config.deferred.backend`, its options, and the minimum Ruby version, 3.3.0. It requires no new configuration. Public APIs are additive except for the `Task.enqueue` return change specified by REQ-30. Callers that expect unconditional `nil` must adapt.
 - REQ-25: Apps that never access `dead_tasks` incur no new public-API allocation or polling. Tasks that do not permanently fail incur no new per-execution conditional beyond the task-01 handoff.
 
-  Ordinary enqueue gains no retry-specific synchronization or retry-state checks. Explicit synchronization adds a durability wait to Disk retry.
+  Ordinary enqueue adds per-call local acceptance bookkeeping. It gains no retry-specific synchronization, backend type check, or shared retry state. Explicit synchronization adds a durability wait to Disk retry.
 
   Snapshot setup holds the permanent lock while Disk opens the live file and locates the last complete-record boundary. Disk does not scan or decode the complete store while locked.
 
@@ -163,6 +171,12 @@ The fresh-enqueue and out-of-process behavior is described in [ADR-002](adr/002-
   Calling `each` without a block returns a normal Ruby Enumerator. Rage does not add `close`, a shared-cursor protocol, generation tracking, or special cross-surface `rewind` behavior. Full exhaustion gives the traversal normal `ensure` cleanup. If an external or derived/lazy Enumerator is only partly consumed, its descriptor and any old unlinked snapshot inode can remain open until that particular Ruby iteration execution is exhausted, unwound, or garbage-collected. Descriptor cleanup is therefore nondeterministic for abandoned partial iteration. Ruby or optional finalizer behavior is only a best-effort safety net; the API does not promise when it runs, and tests must not depend on it. A future feature may add a separately named closeable cursor or another deterministic cancellation mechanism if real usage requires one.
 - REQ-28: `DeadTasks` does not override or overload `Enumerable#find` or its `detect` alias. Both retain Ruby's standard block-predicate behavior, optional fallback callable, and no-block Enumerator behavior. Exact-ID lookup is available only through `find_by_id`.
 - REQ-29: `DeadTasks#find_by_id` delegates through a private backend exact-lookup capability and must not branch on the backend class. Disk and Nil implement the same observable contract, and shared backend-conformance examples must be reusable for future adapters. Disk performs a complete sequential forward scan of its fixed complete-record view; Nil returns `nil`; and a future database adapter may use an indexed query. This feature guarantees behavioral consistency, not backend-independent time or I/O complexity, and does not add a database backend.
+
+- REQ-30: Public `Task.enqueue` returns `true` when its intended `Queue#enqueue` call completes normally, or `false` when middleware prevents that call. This replaces unconditional `nil` without changing the signature. A per-call local records acceptance immediately after the intended queue call returns. Arbitrary middleware or telemetry return values and unrelated enqueues cannot establish acceptance. Exceptions that escape enqueue propagate, including post-acceptance exceptions. Ordinary Nil enqueue follows the same contract without requiring a storage ID.
+
+  If middleware yields multiple times, `true` means at least one intended queue call completed and no exception escapes. Existing multiple-enqueue effects remain unchanged.
+
+- REQ-31: Pending-WAL adoption and recovery preserve complete record boundaries before further appends. Task 07 repairs unfinished final suffixes while preserving complete prior records. A failed append cannot authorize success for an unfinished record. Later appends either restore a safe boundary or raise. Recovery/rotation source cleanup requires confirmed replacement file and directory durability. Boundary work uses bounded buffers and avoids complete-WAL scans on known-clean ordinary appends.
 
 ## Non-goals
 
@@ -197,7 +211,9 @@ The fresh-enqueue and out-of-process behavior is described in [ADR-002](adr/002-
 
   Exact lookup uses the same fixed-boundary forward frame scan. It remembers only the newest matching payload location. It attempts that payload after the scan.
 - [ ] AC-04: Each public entry exposes the documented metadata, exception details, and lazily decoded positional and keyword arguments without requiring the task class for basic inspection. Argument decoding uses frozen Marshal loading plus `Rage::Deferred::Context` accessors, nil normalization, successful-only caching, and the dedicated ID-and-cause error boundary, without duplicating the current storage version's context shape or extracted-value type rules.
-- [ ] AC-05: A recoverable retry creates a fresh normally enqueued task with reset attempts. The entry removes the dead record only after enqueue and persistence confirmation succeed. Disk confirms WAL file and directory durability across rotation and recovery. A rescued selected lookup failure prints the REQ-17 diagnostic, returns `false`, and keeps the record stored. Every other failure and partial-success case follows REQ-14.
+- [ ] AC-05: A recoverable retry creates a fresh normally enqueued task with reset attempts. The entry removes the dead record only after enqueue and persistence confirmation succeed. Disk confirms WAL file and directory durability across rotation and recovery. Middleware suppression returns `false` without flush, removal, or restart warning. Independent mutable replay preserves frozen inspection data. A rescued selected lookup failure prints the REQ-17 diagnostic, returns `false`, and keeps the record stored.
+
+  Every other failure and partial-success case follows REQ-14.
 - [ ] AC-06: Delete accepts one String or one flat Array of Strings. It handles duplicate, missing, empty-Array, and concurrently stale IDs with the documented return values. It rejects zero arguments, multiple arguments, nested Arrays, and other non-String values without storage mutation. One non-empty collection-level call delegates to one Disk compaction.
 - [ ] AC-07: Malformed frames, invalid CRCs, and excluded torn tails produce no diagnostic output. These failures do not delete recoverable data. A newer frame-valid duplicate remains the winner after a payload problem. Covered problems include non-Hash payloads, missing or mistyped fields, and invalid backtrace or context values. Coverage includes inner/outer-ID mismatches. No selected payload problem causes fallback to an older duplicate.
 
@@ -223,7 +239,11 @@ The fresh-enqueue and out-of-process behavior is described in [ADR-002](adr/002-
 
   Coverage verifies entry-owned retry, thin collection retry, optional flush, and flush failure without dead-record removal. It verifies fresh record data, unchanged inspection caches, shared backend identity, and actions after snapshot cleanup.
 
+  Coverage verifies accepted/suppressed enqueue Booleans, unrelated middleware enqueues, arbitrary middleware returns, and post-acceptance exceptions. It verifies mutable replay aliases and cycles, normal splat behavior, stable frozen inspection caches, and live/recovered mutability.
+
   Adapter conformance verifies durable enqueue without flush and buffered enqueue with flush. It covers timer retry, newer dirty writes, and rotation/recovery durability. Coverage includes retry and delete failures, races, non-running Iodine behavior, Rake output, and Rake status. Argument replay remains Ruby 3.3 compatible.
+
+- [ ] AC-12: Pending-WAL boundary repair follows REQ-31. Later complete appends recover after unfinished adopted or copied tails. Failure preserves complete prior records and required recovery sources. Bounded-memory repair preserves clean append performance and existing storage compatibility.
 
 ## Tasks
 
@@ -233,8 +253,9 @@ The fresh-enqueue and out-of-process behavior is described in [ADR-002](adr/002-
 - [ ] [04 — Delete dead tasks](tasks/04-delete-dead-tasks.md)
 - [ ] [05 — Retry dead tasks](tasks/05-retry-dead-tasks.md)
 - [ ] [06 — Add Rake operations and documentation](tasks/06-rake-operations-and-documentation.md)
+- [ ] [07 — Preserve recoverable pending-WAL appends](tasks/07-recoverable-pending-wal-appends.md)
 
-Task dependencies: task 01 precedes task 02; task 02 precedes tasks 03 and 04; both tasks 03 and 04 precede task 05; task 06 follows completion of tasks 02 through 05.
+Task 01 precedes tasks 02 and 07. Task 02 precedes tasks 03 and 04. Tasks 03, 04, and 07 precede task 05. Task 06 follows tasks 02 through 05. Task numbers do not define execution order.
 
 ## Decisions
 
@@ -243,11 +264,7 @@ Task dependencies: task 01 precedes task 02; task 02 precedes tasks 03 and 04; b
 
 ## Open questions for this draft
 
-- Q-01: If enqueue middleware returns without yielding, should retry retain the dead record or treat the middleware decision as success? Decides: the user. Recommendation: retain the dead record. Public `Task.enqueue` returns `nil` in both cases. The selected sequence cannot detect the difference. Detection remains undecided.
 - Q-02: Should Rake use `deferred:dead_tasks:*` and `ID`/`IDS` environment variables? The initial issue proposes the shorter `deferred:dlq:*` namespace. Decides: the user. Recommendation: use `dead_tasks` consistently with the Ruby API.
-
-- Q-03: How must retry handle the existing WAL recoverability risk after interrupted appends or recovery copying? Decides: the user. Recommendation: retain the dead record until recoverability is established. A successful sync alone cannot establish a valid record boundary. The WAL dependency remains unresolved. This task specifies no separate WAL feature or repair algorithm.
-- Q-04: What mutability must retry arguments provide during live execution and after WAL recovery? Decides: the user. Recommendation: preserve immutable inspection values and require equivalent replay behavior. The replay policy remains undecided. Frozen nested values can cause `FrozenError` in middleware or task execution.
 
 ## References
 
