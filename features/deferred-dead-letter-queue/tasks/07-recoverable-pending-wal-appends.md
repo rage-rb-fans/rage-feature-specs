@@ -1,5 +1,5 @@
 ---
-status: ready-for-development
+status: draft
 ---
 
 # Preserve recoverable pending-WAL appends
@@ -12,7 +12,7 @@ Keep complete pending-WAL records recoverable when an adopted WAL or recovered s
 
 The existing pending WAL appends bytes after unfinished tails. Recovery can reject a later complete record because the record joins the unfinished line. Copying an unfinished recovery source can cause the same defect in the destination.
 
-This task repairs the existing pending-WAL defect for ordinary enqueue and recovery. It does not repair the dead-task file. The task follows task 01 and precedes [task 05](05-retry-dead-tasks.md), regardless of its numeric suffix. It implements REQ-31 and AC-12. Follow [ADR-002](../adr/002-dead-task-retry-lifecycle.md).
+This task repairs the existing pending-WAL defect for ordinary enqueue and recovery. It does not repair the dead-task file. This task follows task 01 as deferred independent work. It does not precede or block [task 05](05-retry-dead-tasks.md). It implements REQ-31 and AC-12. Follow [ADR-002](../adr/002-dead-task-retry-lifecycle.md).
 
 This task requires neither task 05's acceptance Boolean nor its optional backend flush. Ordinary enqueue retains timer-based synchronization.
 
@@ -35,7 +35,7 @@ Use the pending WAL's existing newline record framing. Establish safe destinatio
 
 Use the existing file ownership and recovery lifecycle. Keep boundary work outside application middleware and user code. Preserve Fiber interleaving while source copying or synchronization yields. No other operation may close a descriptor that the current copy or synchronization still needs.
 
-This task owns pending-WAL boundary repair and safe recovery/rotation source cleanup. Task 05 later adds an explicit Disk durability barrier through optional backend flush. That barrier uses this task's boundary and file-lifetime guarantees. Neither task changes ordinary enqueue into synchronous persistence.
+This deferred task owns pending-WAL boundary repair and safe recovery/rotation source cleanup. Task 05 can proceed independently with active-WAL and directory synchronization under the existing storage lifecycle. Task 05 does not implement or depend on these future repairs. Neither task changes ordinary enqueue into synchronous persistence.
 
 ## Implementation constraints
 

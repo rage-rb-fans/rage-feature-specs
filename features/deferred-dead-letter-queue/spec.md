@@ -106,7 +106,7 @@ The collection and final active-entry shape, including the mutation-safe snapsho
 
   Refresh uses current record data and the existing construction behavior. Replay uses the independent mutable decoding required by REQ-13. The entry's original metadata and inspection cache remain unchanged. Retained entries can retry or delete after snapshot cleanup. Entry actions do not retain or change a traversal.
 
-  Disk exposes optional `flush`, which delegates to its internal `TasksStorage#sync!`. An adapter may omit `flush` only when successful enqueue already guarantees durable, recoverable pending work. Buffered adapters must provide `flush`. The capability check alone does not prove persistence. The contract does not require `flush` on every backend. Do not add no-op flush methods.
+  Disk exposes optional `flush`, which delegates to its internal `TasksStorage#sync!`. An adapter may omit `flush` when successful enqueue already completes its ordinary acknowledged persistence operation. Buffered adapters must provide `flush`. The capability check alone does not prove persistence. The contract does not require `flush` on every backend. Do not add no-op flush methods.
 
   Dead-task retry with Nil returns `false` before enqueue or flush.
 
@@ -114,9 +114,11 @@ The collection and final active-entry shape, including the mutation-safe snapsho
 
   A removal failure after confirmed persistence raises a retry-specific error with the original cause. The error states that work can exist in both stores. Retry remains at-least-once.
 
-  Disk's internal synchronization confirms relevant WAL file and directory durability across rotation and recovery. Disk retains required descriptors and source data until replacement durability is confirmed. Elapsed `fsync_frequency` alone must not authorize source-file cleanup. The timer retains ordinary batching and retries unsynchronized writes after failure. Explicit synchronization must not clear newer dirty state.
+  Disk synchronizes the currently active WAL file and storage directory. Explicit synchronization leaves timer dirty state untouched. Existing timer batching, rotation, recovery copying, and cleanup policy remain unchanged.
 
-  Task 05 depends on task 07's pending-WAL boundary and source-lifetime guarantees. Public enqueue and backend `add_task` signatures remain unchanged. This design adds no backend retry orchestrator, application callback block, retry flag, or shared synchronization parameter.
+  Synchronization confirms current bytes and directory metadata under the existing storage lifecycle. It does not validate or repair framing or remove inherited tail, rotation, and recovery defects. Those defects can still affect crash recovery after successful retry. Task 07 remains deferred and does not block task 05. Retry adds no refusal checks for those inherited defects.
+
+  Public enqueue and backend `add_task` signatures remain unchanged. This design adds no backend retry orchestrator, application callback block, retry flag, or shared synchronization parameter.
 - REQ-15: Concurrent retry/delete operations are serialized only for their individual storage calls. Two operators racing to retry the same snapshot can enqueue duplicate work, and a delete racing with a retry does not cancel work already enqueued. Operator documentation must require coordination for mutation commands and warn that large retry sets combine necessary per-task enqueues, repeated dead-store compactions, and at-least-once duplication risk.
 - REQ-16: `Queue#schedule` is a no-op unless `Iodine.running?`. An accepted retry outside a running Iodine loop persists a new pending WAL record without executing it. Rake, IRB, and other processes without Iodine use this path. After accepted persistence, Rage warns that a server restart is required. A suppressed retry produces no restart-required warning. Periodic adoption of out-of-band/orphan WAL files is deferred and is not part of this feature.
 
@@ -176,7 +178,7 @@ The fresh-enqueue and out-of-process behavior is described in [ADR-002](adr/002-
 
   If middleware yields multiple times, `true` means at least one intended queue call completed and no exception escapes. Existing multiple-enqueue effects remain unchanged.
 
-- REQ-31: Pending-WAL adoption and recovery preserve complete record boundaries before further appends. Task 07 repairs unfinished final suffixes while preserving complete prior records. A failed append cannot authorize success for an unfinished record. Later appends either restore a safe boundary or raise. Recovery/rotation source cleanup requires confirmed replacement file and directory durability. Boundary work uses bounded buffers and avoids complete-WAL scans on known-clean ordinary appends.
+- REQ-31: Deferred task 07 owns the following future behavior independently of retry. Pending-WAL adoption and recovery preserve complete record boundaries before further appends. Task 07 repairs unfinished final suffixes while preserving complete prior records. A failed append cannot authorize success for an unfinished record. Later appends either restore a safe boundary or raise. Recovery/rotation source cleanup requires confirmed replacement file and directory durability. Boundary work uses bounded buffers and avoids complete-WAL scans on known-clean ordinary appends.
 
 ## Non-goals
 
@@ -211,7 +213,9 @@ The fresh-enqueue and out-of-process behavior is described in [ADR-002](adr/002-
 
   Exact lookup uses the same fixed-boundary forward frame scan. It remembers only the newest matching payload location. It attempts that payload after the scan.
 - [ ] AC-04: Each public entry exposes the documented metadata, exception details, and lazily decoded positional and keyword arguments without requiring the task class for basic inspection. Argument decoding uses frozen Marshal loading plus `Rage::Deferred::Context` accessors, nil normalization, successful-only caching, and the dedicated ID-and-cause error boundary, without duplicating the current storage version's context shape or extracted-value type rules.
-- [ ] AC-05: A recoverable retry creates a fresh normally enqueued task with reset attempts. The entry removes the dead record only after enqueue and persistence confirmation succeed. Disk confirms WAL file and directory durability across rotation and recovery. Middleware suppression returns `false` without flush, removal, or restart warning. Independent mutable replay preserves frozen inspection data. A rescued selected lookup failure prints the REQ-17 diagnostic, returns `false`, and keeps the record stored.
+- [ ] AC-05: A recoverable retry creates a fresh normally enqueued task with reset attempts. The entry removes the dead record only after enqueue and persistence confirmation succeed. Disk synchronizes active-WAL bytes and directory metadata under the existing storage lifecycle. Inherited WAL defects remain as specified by REQ-14.
+
+  Middleware suppression returns `false` without flush, removal, or restart warning. Independent mutable replay preserves frozen inspection data. A rescued selected lookup failure prints the REQ-17 diagnostic, returns `false`, and keeps the record stored.
 
   Every other failure and partial-success case follows REQ-14.
 - [ ] AC-06: Delete accepts one String or one flat Array of Strings. It handles duplicate, missing, empty-Array, and concurrently stale IDs with the documented return values. It rejects zero arguments, multiple arguments, nested Arrays, and other non-String values without storage mutation. One non-empty collection-level call delegates to one Disk compaction.
@@ -241,9 +245,9 @@ The fresh-enqueue and out-of-process behavior is described in [ADR-002](adr/002-
 
   Coverage verifies accepted/suppressed enqueue Booleans, unrelated middleware enqueues, arbitrary middleware returns, and post-acceptance exceptions. It verifies mutable replay aliases and cycles, normal splat behavior, stable frozen inspection caches, and live/recovered mutability.
 
-  Adapter conformance verifies durable enqueue without flush and buffered enqueue with flush. It covers timer retry, newer dirty writes, and rotation/recovery durability. Coverage includes retry and delete failures, races, non-running Iodine behavior, Rake output, and Rake status. Argument replay remains Ruby 3.3 compatible.
+  Adapter conformance verifies ordinary acknowledged enqueue without flush and buffered enqueue with flush. Coverage verifies active-WAL/directory synchronization and unchanged timer dirty state. Inherited WAL repair coverage belongs only to deferred task 07. Coverage includes retry and delete failures, races, non-running Iodine behavior, Rake output, and Rake status. Argument replay remains Ruby 3.3 compatible.
 
-- [ ] AC-12: Pending-WAL boundary repair follows REQ-31. Later complete appends recover after unfinished adopted or copied tails. Failure preserves complete prior records and required recovery sources. Bounded-memory repair preserves clean append performance and existing storage compatibility.
+- [ ] AC-12: Deferred task 07 owns pending-WAL boundary repair under REQ-31. This criterion does not block task 05. Later complete appends recover after unfinished adopted or copied tails. Failure preserves complete prior records and required recovery sources. Bounded-memory repair preserves clean append performance and existing storage compatibility.
 
 ## Tasks
 
@@ -253,9 +257,9 @@ The fresh-enqueue and out-of-process behavior is described in [ADR-002](adr/002-
 - [ ] [04 — Delete dead tasks](tasks/04-delete-dead-tasks.md)
 - [ ] [05 — Retry dead tasks](tasks/05-retry-dead-tasks.md)
 - [ ] [06 — Add Rake operations and documentation](tasks/06-rake-operations-and-documentation.md)
-- [ ] [07 — Preserve recoverable pending-WAL appends](tasks/07-recoverable-pending-wal-appends.md)
+- [ ] [07 — Preserve recoverable pending-WAL appends](tasks/07-recoverable-pending-wal-appends.md) (deferred; independent future work)
 
-Task 01 precedes tasks 02 and 07. Task 02 precedes tasks 03 and 04. Tasks 03, 04, and 07 precede task 05. Task 06 follows tasks 02 through 05. Task numbers do not define execution order.
+Task 01 precedes tasks 02 and 07. Task 02 precedes tasks 03 and 04. Tasks 03 and 04 precede task 05. Deferred task 07 is independent future work after task 01; task 05 does not depend on it. Task 06 follows tasks 02 through 05. Task numbers do not define execution order.
 
 ## Decisions
 

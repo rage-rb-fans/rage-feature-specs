@@ -42,11 +42,13 @@ Retry is a fresh enqueue of the original positional and keyword arguments under 
 
 `DeadTasks#retry(id)` remains a thin `find_by_id` followed by `entry.retry`. A missing lookup returns `false`. The entry performs its own refresh before enqueue. No second retry implementation exists.
 
-Disk exposes optional `flush`, which delegates to internal `TasksStorage#sync!`. An adapter may omit `flush` only when successful enqueue already guarantees durable, recoverable pending work. A buffered adapter must provide `flush`. The capability check alone does not prove persistence. Adapter-conformance coverage must verify the persistence guarantee.
+Disk exposes optional `flush`, which delegates to internal `TasksStorage#sync!`. An adapter may omit `flush` when successful enqueue already completes its ordinary acknowledged persistence operation. A buffered adapter must provide `flush`. The capability check alone does not prove persistence. Adapter-conformance coverage must verify ordinary acknowledged persistence semantics.
 
 Do not require `flush` on every backend. Do not add no-op flush methods. Dead-task retry with Nil returns `false` before enqueue or flush. The design adds no backend retry orchestrator, application callback block, retry flag, enqueue-context hook, or shared synchronization parameter.
 
-Disk's synchronization confirms relevant WAL file and directory durability across rotation and recovery. Disk retains required descriptors and source WAL data until replacement durability is confirmed. A timer delay alone does not establish durability. The timer continues ordinary batching and retains unsynchronized writes after failure. Explicit synchronization must not erase newer dirty state.
+Disk synchronizes the currently active WAL file, then the storage directory. Failed synchronization propagates and preserves the source dead record. Explicit synchronization leaves timer dirty state untouched. Existing timer batching remains unchanged.
+
+Synchronization confirms current bytes and directory metadata under the existing storage lifecycle. It does not validate or repair framing or remove inherited tail, rotation, and recovery defects. Task 05 accepts those limits. A successful retry therefore does not establish complete crash-recovery safety. Retry adds no refusal checks for inherited defects.
 
 ### Enqueue acceptance
 
@@ -68,9 +70,9 @@ One decode preserves Marshal-supported shared references and cycles within and a
 
 Live retry permits the same nested mutations as ordinary pending-WAL recovery. Ordinary Marshal behavior still applies, including custom deserialization behavior that can return frozen objects. Marshal or accessor failures use the dedicated context-deserialization error with the task ID and original cause. The dead record remains intact. No new context shape or extracted-value type validation is introduced.
 
-### Pending-WAL prerequisite
+### Deferred pending-WAL repairs
 
-[Task 07](../tasks/07-recoverable-pending-wal-appends.md) repairs the existing pending-WAL record-boundary defect before task 05. It covers adopted unfinished tails, recovered-source boundaries, failed appends, and safe source cleanup. Task 07 applies to ordinary enqueue and recovery without depending on retry's acceptance or flush APIs. Task 05 then adds explicit Disk synchronization over those guarantees. This separates pending-WAL repair from the dead-task retry operation.
+[Task 07](../tasks/07-recoverable-pending-wal-appends.md) remains independent future work. It does not precede or block task 05. Task 05 adds only the explicit active-WAL and directory synchronization required by retry. It does not change tail repair, short-write handling, rotation, recovery copying, source cleanup, or timer-failure policy. Existing WAL defects can still affect crash recovery after the dead record is removed. This is an accepted scope limitation, not an unresolved implementation gate.
 
 `Queue#schedule` first checks `Iodine.running?` and performs no scheduling work when false. Accepted retry outside a running server writes and synchronizes the pending WAL before dead-record removal. Retry emits the restart-required warning after accepted persistence succeeds. Periodic orphan-WAL adoption belongs to a future feature.
 
@@ -82,7 +84,7 @@ Live retry permits the same nested mutations as ordinary pending-WAL recovery. O
 - An optional flush failure propagates and preserves the dead record. The pending outcome remains uncertain. Repeating retry can duplicate work.
 - A crash or deletion failure after confirmed persistence can leave both records. A deletion failure raises the retry-specific error with its original cause.
 - Normal enqueue keeps its signatures, middleware, telemetry, and timer batching. Its return changes from `nil` to the acceptance Boolean. Only Disk retry requests explicit WAL synchronization.
-- Middleware suppression retains the dead record and returns `false`. Independent replay decoding preserves immutable inspection. The pending-WAL prerequisite protects later appends from unfinished record tails.
+- Middleware suppression retains the dead record and returns `false`. Independent replay decoding preserves immutable inspection. Existing pending-WAL defects remain outside task 05.
 - Concurrent retry/delete operations require operator coordination and do not provide cancellation or exactly-once guarantees.
 - Out-of-process retry is durable but not immediate. Operators must restart the Rage server before the orphaned WAL is adopted.
 - The public API depends on the private serialized context layout only through `Rage::Deferred::Context` accessors used by the dedicated args/kwargs decoder; proactive compatibility validation is deferred to a future storage-version change.
