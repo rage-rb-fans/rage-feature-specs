@@ -42,7 +42,7 @@ Retry is a fresh enqueue of the original positional and keyword arguments under 
 
 Retry constructs no second entry. The original metadata and inspection cache remain unchanged. Entry retry needs no collection, action handler, service, or traversal resources.
 
-`DeadTasks#retry(id)` remains a thin `find_by_id` followed by `entry.retry`. A missing lookup returns `false`. The entry checks existence before enqueue without replacing the first lookup's class or arguments. No second retry implementation exists.
+`DeadTasks` has no `retry` method. ID-based callers use `find_by_id(id)` and call `entry.retry` when lookup returns an entry. The caller returns `false` when lookup returns `nil`. The entry checks existence before enqueue without replacing the first lookup's class or arguments. No second retry implementation exists.
 
 Disk exposes optional `flush`, which delegates to internal `TasksStorage#sync!`. An adapter may omit `flush` when successful enqueue already completes its ordinary acknowledged persistence operation. A buffered adapter must provide `flush`. The capability check alone does not prove persistence. Adapter-conformance coverage must verify ordinary acknowledged persistence semantics.
 

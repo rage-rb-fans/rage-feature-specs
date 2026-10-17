@@ -92,11 +92,13 @@ The collection and final active-entry shape, including the mutation-safe snapsho
   The collection method requires one String ID or one flat Array of String IDs. It de-duplicates Array members and returns the number of distinct records removed. An empty Array returns `0`. Missing or already-removed IDs are not errors. Zero arguments or multiple arguments raise `ArgumentError`.
 
   A nested Array or another non-String value raises `TypeError`. Invalid input does not change storage. For a large selected set, callers should collect exact IDs with `filter_map` and pass that array to one `dead_tasks.delete(ids)` call; the accumulator retains memory proportional to the selected IDs in addition to the traversal's complete winner index, while Disk performs one locked compaction rather than one per entry.
-- REQ-12: `DeadTask#retry` and `DeadTasks#retry(id)` retry one record. If the exact ID is absent during the existence check, retry returns `false`. A completed retry sequence returns `true`. The entry checks its exact ID through the shared backend before class validation and argument decoding.
+- REQ-12: `DeadTask#retry` retries one record. `DeadTasks` has no `retry` method. If the exact ID is absent during the existence check, retry returns `false`. A completed retry sequence returns `true`. The entry checks its exact ID through the shared backend before class validation and argument decoding.
 
   A rescued selected lookup failure also returns `false` after the REQ-17 diagnostic. It does not enqueue or remove the stored record.
 
-  `DeadTasks#retry(id)` only calls `find_by_id(id)` and then the returned entry's `retry`; missing lookup returns `false`. The entry owns the only retry implementation. This feature adds no collection-level bulk-retry primitive. Retrying a large set performs a fresh enqueue and an individual dead-store removal for every task. This work may approach quadratic storage cost under task 01's rewrite algorithm. An optimized large-set retry workflow is future work.
+  For an exact ID, callers use `find_by_id(id)` and call `entry.retry` when lookup returns an entry. Callers return `false` when lookup returns `nil`. The entry owns the only retry implementation.
+
+  This feature adds no collection-level bulk-retry primitive. Retrying a large set performs a fresh enqueue and an individual dead-store removal for every task. This work may approach quadratic storage cost under task 01's rewrite algorithm. An optimized large-set retry workflow is future work.
 - REQ-13: Retry resolves the stored class name without `eval` and verifies that the class includes `Rage::Deferred::Task`. Retry decodes one independent mutable context graph from the entry's serialized bytes with ordinary `Marshal.load`. Retry extracts arguments through existing Context accessors and normalizes nil values to mutable empty collections. Public inspection remains frozen and its cache remains unchanged.
 
   One decode preserves Marshal-supported shared references and cycles across positional and keyword arguments. Normal public enqueue splats can create new outer containers. The contract does not preserve those outer containers' identities. Ordinary Marshal and custom deserialization behavior still apply. Live replay permits the same nested mutations as ordinary pending-WAL recovery.
@@ -158,7 +160,7 @@ The fresh-enqueue and out-of-process behavior is described in [ADR-002](adr/002-
 ### Rake/operator interface
 
 - REQ-21: Thin Rake tasks expose list, show, retry, and delete through the Ruby API. The proposed names are `deferred:dead_tasks:list`, `deferred:dead_tasks:show`, `deferred:dead_tasks:retry`, and `deferred:dead_tasks:delete`.
-- REQ-22: `list` prints bounded summaries oldest-first in the collection's order and omits arguments and backtraces. `show` requires one `ID` and prints the full inspectable record, including arguments and backtrace, with a sensitive-data warning. `retry` and `delete` accept comma-separated `IDS` and process each ID independently. Both print per-ID outcomes and totals, then exit non-zero after all failures are reported.
+- REQ-22: `list` prints bounded summaries oldest-first in the collection's order and omits arguments and backtraces. `show` requires one `ID` and prints the full inspectable record, including arguments and backtrace, with a sensitive-data warning. `retry` and `delete` accept comma-separated `IDS` and process each ID independently. Rake retry calls `find_by_id(id)` and then `entry.retry` when lookup returns an entry. Both print per-ID outcomes and totals, then exit non-zero after all failures are reported.
 
   Retry totals use succeeded/not-retried/failed; delete totals use succeeded/missing/failed. Retry `false` reports not retried without distinguishing missing, stale, or rescued lookup failures. Retry `true` reports sequence completion without proving queue acceptance. Non-exception outcomes preserve the existing exit policy.
 - REQ-23: Rake tasks boot the application environment, contain no storage logic, and behave consistently for Disk and Nil backends. After enqueue and optional flush return normally, out-of-process retry output prominently states that server restart is required. Silent suppression does not prevent this warning.
@@ -252,7 +254,7 @@ The fresh-enqueue and out-of-process behavior is described in [ADR-002](adr/002-
 
   Coverage verifies forward winner selection and one-at-a-time oldest-first delivery. It includes torn-tail repair with append and rename compaction during enumeration. It covers lazy frozen context decoding through `Rage::Deferred::Context`. Context coverage includes nil normalization, immutable graphs, successful-only caching, and ID-and-cause errors.
 
-  Coverage verifies entry-owned retry, thin collection retry, optional flush, and flush failure without dead-record removal. It verifies entry snapshot replay, existence checks, replacement races, unchanged inspection caches, shared backend identity, and actions after snapshot cleanup.
+  Coverage verifies entry-owned retry, the absence of collection retry, optional flush, and flush failure without dead-record removal. It verifies entry snapshot replay, existence checks, replacement races, unchanged inspection caches, shared backend identity, and actions after snapshot cleanup.
 
   Coverage verifies unchanged enqueue `nil` returns for Disk and Nil. It verifies ignored return values, silent middleware and telemetry suppression, continued removal, and the applicable restart warning. It covers exceptions before and after pending work exists. It verifies mutable replay aliases and cycles, normal splat behavior, stable frozen inspection caches, and live/recovered mutability.
 

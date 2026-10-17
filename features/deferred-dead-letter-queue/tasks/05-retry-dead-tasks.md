@@ -16,7 +16,7 @@ This task depends on tasks 03 and 04. [Task 07](07-recoverable-pending-wal-appen
 
 ## Requirements
 
-- Add `DeadTask#retry` according to ADR-001. The entry owns the complete retry workflow through its private shared backend. Keep `DeadTasks#retry(id)` as a thin convenience method: call `find_by_id(id)`, then call the returned entry's `retry`. Return `false` when lookup returns `nil`. Preserve lookup's one-String argument contract. Do not add another retry implementation or action handler.
+- Add `DeadTask#retry` according to ADR-001. The entry owns the complete retry workflow through its private shared backend. Do not add `DeadTasks#retry`. For ID-based retry, callers use `find_by_id(id)` and call `entry.retry` when lookup returns an entry. Preserve lookup's one-String argument contract. Do not add another retry implementation or action handler.
 - Check whether the entry's exact authoritative outer ID still exists at mutation time. Use `@backend.find_dead_task(@id)` only as an existence check. Discard the returned record's class and context. Preserve task 03's `find_by_id` results, diagnostics, and error behavior. Disk uses only frame checks during selection and applies no shared top-level schema validator.
 
   If selected decoding raises `ArgumentError`, `NameError`, or `TypeError`, lookup prints its standard-output diagnostic and returns `nil`. Retry then returns `false` without enqueue or removal. The selected record remains stored and hides older duplicates.
@@ -46,7 +46,7 @@ This task depends on tasks 03 and 04. [Task 07](07-recoverable-pending-wal-appen
 - Detect retry outside a running Iodine process. After enqueue and optional flush return normally, emit one stderr warning. Emit this warning even after silent suppression. Identify only the dead-task ID and state that server restart is required. Do not print args, kwargs, context, or exception text. This warning differs from task 03's selected decoding diagnostic, which can occur before enqueue.
 - Do not implement orphan-WAL polling/adoption or contact a running worker. The out-of-process WAL remains unavailable to existing workers until restart, as accepted in issue #369.
 - Nil dead-task retry returns `false` without class resolution, context decoding, scheduling, files, or background work. Ordinary Nil enqueue retains its unconditional `nil` return.
-- Task 06's multi-ID Rake retry invokes this single-ID operation independently for every requested ID and reports partial results; it is not an atomic or optimized bulk-retry primitive.
+- Task 06's multi-ID Rake retry calls `find_by_id(id)` and then `entry.retry` independently for every requested ID. The command reports partial results. The command is not an atomic or optimized bulk-retry primitive.
 - Document the retry sequence result, suppression limitation, mutable replay, errors, partial success, concurrency, and restart requirements with YARD.
 - Update the changelog for retry. Document unchanged enqueue behavior and deferred acceptance detection. Include task 03's unsanitized selected-failure diagnostic and the resulting `false` return.
 
@@ -67,7 +67,14 @@ task_class.enqueue(*args, **kwargs)
 true
 ```
 
-`DeadTasks#retry(id)` calls `find_by_id(id)` and returns `false` when lookup returns `nil`. Otherwise, the collection calls the returned entry's `retry`. The entry then checks existence before enqueue. An intervening removal returns `false`; a same-ID replacement leaves the first lookup's class and arguments in use. The collection does not duplicate retry logic. Entry retry does not call collection retry.
+`DeadTasks` has no `retry` method. ID-based callers use the existing lookup:
+
+```ruby
+entry = dead_tasks.find_by_id(id)
+entry ? entry.retry : false
+```
+
+The entry checks existence before enqueue. An intervening removal returns `false`; a same-ID replacement leaves the first lookup's class and arguments in use. Entry retry does not call the collection.
 
 Disk implements `flush` by calling `@tasks_storage.sync!`. `respond_to?(:flush)` selects the optional operation; the check alone does not prove persistence. An adapter without `flush` completes its ordinary acknowledged persistence operation through successful enqueue. Buffered adapters must provide `flush`. Adapters with synchronous persistence need no flush method. This contract does not remove inherited backend defects.
 
@@ -104,13 +111,13 @@ Place the non-running guard at the top of `Queue#schedule`, not only in the dead
 - Preserve task 03's exact lookup behavior. Do not use or override Enumerable `find` for retry lookup.
 - Do not hold the dead-task file lock while enqueue middleware or other application code runs.
 - Do not rescue `Exception`; preserve Rage's existing exception boundaries and Ruby 3.3 behavior.
-- Preserve ADR-001's active-entry and collection-mutation surfaces; do not replace either surface or otherwise change retry semantics.
+- Preserve ADR-001's entry retry and both deletion surfaces. Do not otherwise change retry semantics.
 
 ## Acceptance criteria
 
 - [ ] Missing, Nil, or rescued-selected-failure retry returns `false`. Retry returns `true` after the documented enqueue, optional flush, and removal sequence. The result does not prove queue acceptance.
 - [ ] Retry checks existence through exact-ID lookup without shared top-level schema validation. Selected `ArgumentError`, `NameError`, and `TypeError` failures print the task 03 diagnostic and return `false`. Other selected decoding failures propagate. Public lookup entry-construction failures also propagate unchanged. No selected failure falls back to an older duplicate.
-- [ ] `DeadTask#retry` owns the only retry implementation and reuses task 04's private shared backend. Collection retry delegates through `find_by_id` and `entry.retry`.
+- [ ] `DeadTask#retry` owns the only retry implementation and reuses task 04's private shared backend. `DeadTasks` exposes no `retry` method.
 - [ ] Retry resolves and validates the task class without `eval` and preserves the dead record on class or context failure.
 - [ ] Retry uses original positional/keyword arguments through a fresh normal enqueue with reset ID, attempts, context, middleware, and telemetry.
 - [ ] Public enqueue retains unconditional `nil` returns, its signature, middleware, and telemetry for Disk and Nil. Retry ignores the return value.
@@ -131,11 +138,11 @@ Place the non-running guard at the top of `Queue#schedule`, not only in the dead
 
 ## Verification
 
-- Add focused collection and entry specs for success, missing, concurrently deleted, replaced, Nil, class, and context cases. Verify exact return and error types.
+- Add focused entry and caller-side lookup specs for success, missing, concurrently deleted, replaced, Nil, class, and context cases. Verify exact return and error types.
 - Cover fallback from a newer frame-invalid duplicate to an older frame-valid record. Cover each rescued selected failure class on a newer frame-valid duplicate.
 - Verify the task 03 diagnostic, `false` result, no enqueue, no removal, stored-record preservation, and no older fallback. Verify propagation for other selected failures.
 - Verify entries use the identical shared backend for the existence check, flush, and removal. Verify no action handler or collection reference remains.
-- Verify collection retry delegates through exact lookup to entry retry. Cover removal or replacement between collection lookup and the existence check.
+- Verify `DeadTasks` has no `retry` method. Cover caller-side exact lookup followed by entry retry. Cover removal or replacement between lookup and the existence check.
 - Verify entry retry uses the original class and arguments after same-ID replacement. Preserve original metadata and cached inspection values. Verify later exact-ID removal can delete the replacement.
 - Verify the existence check constructs no second entry and retry discards the returned record. Preserve public lookup and collection entry-construction behavior.
 - Verify retained entries retry after `first`, `find_by_id`, and block traversal release snapshot resources. Preserve ongoing traversal state.

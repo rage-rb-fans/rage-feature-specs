@@ -100,7 +100,9 @@ Task 02 introduces `DeadTask` as a passive summary value without a mutation depe
 
 The collection constructs each active entry with its `@backend` and the record data. Each entry privately retains the backend shared with `Rage::Deferred.__backend` and the queue. An entry never constructs a backend. The entry exposes no public backend accessor or setter. Entries retain no collection, action handler, service, iterator, snapshot descriptor, cursor, winner index, or traversal registry.
 
-`DeadTask#delete` calls `@backend.remove_dead_tasks(@id) == 1` without lookup or argument decoding. `DeadTask#retry` owns an exact-ID existence check, class validation, argument decoding, enqueue, optional backend flush, and removal. `DeadTasks#retry(id)` performs `find_by_id(id)` and delegates to the returned entry's `retry`; missing lookup returns `false`. Collection deletion retains its input validation, bulk normalization, and count result. Both deletion surfaces use the same backend removal primitive. The public layer contains no compaction algorithm.
+`DeadTask#delete` calls `@backend.remove_dead_tasks(@id) == 1` without lookup or argument decoding. `DeadTask#retry` owns an exact-ID existence check, class validation, argument decoding, enqueue, optional backend flush, and removal. `DeadTasks` has no `retry` method. ID-based callers use `find_by_id(id)` and call `entry.retry` when lookup returns an entry.
+
+Collection deletion retains its input validation, bulk normalization, and count result. Both deletion surfaces use the same backend removal primitive. The public layer contains no compaction algorithm.
 
 Entry retry checks existence through backend exact-ID lookup with task 03's lookup semantics. Retry discards the returned record and uses the entry's original class and serialized context. The original metadata and successful inspection cache remain unchanged. A same-ID replacement does not change replay input; later removal can delete that replacement. The existence check does not reserve the record or compare versions.
 
