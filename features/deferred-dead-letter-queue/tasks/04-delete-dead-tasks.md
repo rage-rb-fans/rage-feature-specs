@@ -10,14 +10,14 @@ Let trusted operators permanently delete one or more dead tasks through the Ruby
 
 ## Context
 
-Task 02 establishes `Rage::Deferred.dead_tasks`, stable snapshot enumeration, and a passive read-only `DeadTask` entry model with no mutation dependency. Task 01 implements durable multi-ID removal by locked temp-file compaction. This task introduces the private entry-action wiring and exposes deletion publicly; it remains independent of the detailed inspection behavior in task 03.
+Task 02 establishes `Rage::Deferred.dead_tasks`, stable snapshot enumeration, and a passive read-only `DeadTask` entry model with no mutation dependency. Task 01 implements durable multi-ID removal by locked temp-file compaction. This task gives each entry the shared backend privately and exposes deletion publicly. The task remains independent of detailed inspection in task 03.
 
 This task depends on task 02 and implements REQ-11 plus the deletion and enumeration-mutation portions of REQ-15, REQ-19, REQ-20, REQ-24 through REQ-26, AC-03, and AC-06. Follow [ADR-001](../adr/001-public-dead-task-object-model.md).
 
 ## Requirements
 
-- Add `DeadTask#delete` and `DeadTasks#delete(id_or_ids)` according to the final active-entry/collection model in ADR-001. In this task, introduce private action wiring to entries: a `DeadTask` retains its exact ID and a narrow delegate supporting `delete(id)`. The concrete delegate may be the creating `DeadTasks` collection, but it is not the traversal snapshot or raw backend, and callers cannot observe or replace it. Entry construction remains private.
-- `DeadTask#delete` returns `true` only when that logical record was removed and `false` when it is missing or already removed.
+- Add `DeadTask#delete` and `DeadTasks#delete(id_or_ids)` according to ADR-001. The collection constructs entries with its existing shared backend. Each entry privately retains that identical backend and its record data. Do not create a backend independently. Do not retain a collection, action handler, service, iterator, or snapshot in an entry. Keep entry construction and backend access private.
+- `DeadTask#delete` calls `@backend.remove_dead_tasks(@id) == 1` directly. The method returns `true` for one logical removal and `false` for a missing record. The method performs no lookup, class resolution, or argument decoding.
 - `DeadTasks#delete(id_or_ids)` requires one argument. The argument must be one String ID or one flat Array of String IDs. The method de-duplicates Array members and returns the number of distinct logical records removed. An empty Array returns `0`. Missing or stale IDs do not count and are not errors.
 - A call with no argument or more than one argument raises `ArgumentError`. A nested Array or another non-String value raises `TypeError`. These invalid calls must not change storage.
 - Validate the complete ID input before mutating storage so invalid input cannot cause a partial deletion. Do not coerce IDs or interpolate them into code or shell commands.
@@ -40,7 +40,11 @@ This task depends on task 02 and implements REQ-11 plus the deletion and enumera
 
 ## Design
 
-Validate the one public argument in `DeadTasks`. Wrap a String in an Array, or use the supplied flat Array. De-duplicate the validated IDs. Call `backend.remove_dead_tasks` once for a non-empty result. Translate the single-entry count to a Boolean for `DeadTask#delete`. Extend task 02's centralized private entry construction to inject the deletion delegate only when this task adds `DeadTask#delete`. `DeadTasks` may itself serve as that private delegate; no separate actions class is required. Keep the mechanism narrow but extensible so task 05 can reuse it for `retry(id)` rather than introducing a second, incompatible entry dependency. Do not reimplement compaction in the public layer.
+Validate the one public argument in `DeadTasks`. Wrap a String in an Array, or use the supplied flat Array. De-duplicate the validated IDs. Call `backend.remove_dead_tasks` once for a non-empty result.
+
+Replace the existing private action handler with the shared backend during entry construction. Both enumeration and exact lookup pass the collection's `@backend` to each entry. `DeadTask#delete` calls the same backend removal primitive directly and compares its count with `1`. Task 05 adds retry to the same active entry. Neither action calls the collection. Do not reimplement compaction in the public layer.
+
+Entries retain no snapshot descriptor, cursor, winner index, current Enumerator, or traversal registry. Retained entries can delete after `first`, `find_by_id`, or block traversal has released its snapshot. Entry actions do not change the entry's metadata or inspection cache.
 
 Task 02's open descriptor continues reading its fixed view after deletion renames the live path. Mutation cannot replace remaining snapshot winners. Task 02 can skip a winner only for its documented rescued decoding failures. The iterator owns descriptor cleanup.
 
@@ -48,7 +52,7 @@ Task 02's open descriptor continues reading its fixed view after deletion rename
 
 - Do not change task 01's remove algorithm, lock strategy, file format, or crash guarantees.
 - Do not add retry, detailed inspection, Rake commands, automatic retention, or deletion callbacks.
-- Do not pass the raw backend or traversal snapshot into entries. This task owns the first mutation-capable dependency on `DeadTask`, limited to the private deletion/action protocol.
+- Pass only the identical shared backend as the entry's mutation dependency. Do not add an action handler or public backend accessor.
 - Do not hold a dead-task store lock while yielding user code.
 - Do not promise transactionality across separate public delete calls.
 - Preserve ADR-001's active-entry and collection-mutation surfaces; do not replace either surface or otherwise change this task's semantics.
@@ -58,7 +62,7 @@ Task 02's open descriptor continues reading its fixed view after deletion rename
 ## Acceptance criteria
 
 - [ ] Single-entry deletion returns `true` only for an actual removal and `false` for missing/stale entries.
-- [ ] Task 02's passive entries gain one private, narrow deletion delegate in this task; the delegate is not publicly accessible and does not expose the raw backend or active snapshot.
+- [ ] Entries privately retain the identical backend used by the collection and queue. Entry deletion needs no collection, action handler, or traversal resources.
 - [ ] Collection deletion accepts one String or one flat Array of Strings with exact documented results and validation-before-mutation.
 - [ ] Collection deletion de-duplicates Array members and handles missing, stale, and empty Array inputs with exact documented results.
 - [ ] Collection deletion rejects zero arguments, multiple arguments, nested Arrays, and other non-String values without storage mutation.
@@ -73,7 +77,10 @@ Task 02's open descriptor continues reading its fixed view after deletion rename
 
 - Add focused collection and entry specs for single, flat-Array, duplicate, missing, empty-Array, and stale inputs. Verify exact return values.
 - Reject no argument and multiple arguments with `ArgumentError`. Reject nested Arrays and other invalid values with `TypeError`.
-- Verify entry construction adds the private deletion delegate only with this task, does not expose it publicly, and remains compatible with task 03's passive inspection fields whether task 03 is applied before or after this task.
+- Verify enumeration and exact lookup construct entries with the identical shared backend. Verify both backend initialization orders.
+- Verify entry deletion calls `remove_dead_tasks(@id)` directly without lookup, class resolution, argument decoding, or collection delegation.
+- Verify retained entries delete after snapshot cleanup. Verify metadata and successful inspection caches remain unchanged.
+- Verify entries expose no backend accessor or setter and retain no collection, action handler, or traversal resources.
 - Verify each invalid input performs no backend removal. Verify an empty Array performs no backend removal. Verify Nil performs no filesystem work.
 - Exercise `each(&:delete)`, selective deletion, concurrent append, and rename compaction without skipped or duplicated yielded entries. Verify descriptor cleanup.
 - Add a rescued selected failure. Verify its diagnostic, continued traversal, retained record, and deletion of every later yielded entry.

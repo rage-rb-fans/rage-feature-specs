@@ -22,7 +22,7 @@ Calling the queue directly can preserve logger and user context and reuse intern
 
 ### Option C: Perform a fresh public enqueue, confirm persistence, then remove
 
-Resolve the stored task class and decode args/kwargs. The collection calls normal public `enqueue`. This creates a new task ID and context, resets attempts, and runs current middleware and telemetry. The collection calls optional backend `flush` before deleting the dead record. Disk requires explicit WAL synchronization because normal enqueue uses timer-based synchronization.
+Resolve the stored task class and decode args/kwargs. The entry calls normal public `enqueue`. This creates a new task ID and context, resets attempts, and runs current middleware and telemetry. The entry calls optional backend `flush` before deleting the dead record. Disk requires explicit WAL synchronization because normal enqueue uses timer-based synchronization.
 
 A deletion failure can leave both copies. Concurrent operators can enqueue duplicates.
 
@@ -32,11 +32,15 @@ Workers periodically discover WALs created by Rake or console processes. This im
 
 ## Decision
 
-Use Option C with collection-owned enqueue, optional backend flush, and removal. Continue to defer Option D. This ADR remains proposed.
+Use Option C with entry-owned enqueue, optional backend flush, and removal. Continue to defer Option D. This ADR remains proposed.
 
-Retry is a fresh enqueue of the original positional and keyword arguments under the current application code and configuration. It does not preserve the original logger/user context, task ID, attempt count, delay, or exception object. The collection removes the dead record only after enqueue and persistence confirmation succeed.
+Retry is a fresh enqueue of the original positional and keyword arguments under the current application code and configuration. It does not preserve the original logger/user context, task ID, attempt count, delay, or exception object. The entry removes the dead record only after enqueue and persistence confirmation succeed.
 
-`DeadTasks#retry` owns exact-ID lookup, class validation, original argument decoding, enqueue, optional flush, and removal. The collection calls `task_class.enqueue(*args, **kwargs)`. The collection then calls `@backend.flush` only when `@backend.respond_to?(:flush)`. After persistence confirmation, the collection calls `@backend.remove_dead_tasks(id)` and returns `true`. A zero removal count also returns `true`.
+`DeadTask#retry` owns exact-ID refresh, class validation, original argument decoding, enqueue, optional flush, and removal. The entry calls `task_class.enqueue(*args, **kwargs)`. The entry then calls `@backend.flush` only when `@backend.respond_to?(:flush)`. After persistence confirmation, the entry calls `@backend.remove_dead_tasks(@id)` and returns `true`. A zero removal count also returns `true`.
+
+`DeadTask` privately retains the identical shared backend supplied by its collection. The entry refreshes its exact ID through backend lookup before validating the current class and decoding the current arguments. Refresh preserves the original entry metadata and inspection cache. Entry retry needs no collection, action handler, service, or traversal resources.
+
+`DeadTasks#retry(id)` remains a thin `find_by_id` followed by `entry.retry`. A missing lookup returns `false`. The entry performs its own refresh before enqueue. No second retry implementation exists.
 
 Disk exposes optional `flush`, which delegates to internal `TasksStorage#sync!`. An adapter may omit `flush` only when successful enqueue already guarantees durable, recoverable pending work. A buffered adapter must provide `flush`. The capability check alone does not prove persistence. Adapter-conformance coverage must verify the persistence guarantee.
 
@@ -56,7 +60,7 @@ For the current storage version, retry obtains those arguments through task 03's
 - An optional flush failure propagates and preserves the dead record. The pending outcome remains uncertain. Repeating retry can duplicate work.
 - A crash or deletion failure after confirmed persistence can leave both records. A deletion failure raises the retry-specific error with its original cause.
 - Normal enqueue keeps its signatures, middleware, telemetry, and timer batching. Only Disk retry requests explicit WAL synchronization.
-- Middleware can return without yielding. Public `Task.enqueue` still returns `nil`, so the selected sequence cannot detect that case. Task 05 records the unresolved outcome. Interrupted WAL tails and replay argument mutability also remain unresolved in task 05.
+- Middleware can return without yielding. Public `Task.enqueue` still returns `nil`, so the selected sequence cannot detect that case. Task 05 records the unresolved outcome. The existing WAL tail dependency and replay argument mutability also remain unresolved in task 05.
 - Concurrent retry/delete operations require operator coordination and do not provide cancellation or exactly-once guarantees.
 - Out-of-process retry is durable but not immediate. Operators must restart the Rage server before the orphaned WAL is adopted.
 - The public API depends on the private serialized context layout only through `Rage::Deferred::Context` accessors used by the dedicated args/kwargs decoder; proactive compatibility validation is deferred to a future storage-version change.
