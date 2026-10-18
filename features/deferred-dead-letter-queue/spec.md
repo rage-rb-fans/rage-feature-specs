@@ -339,11 +339,37 @@ Task 01 precedes tasks 02 and 07. Task 02 precedes tasks 03 and 04. Tasks 03 and
 Task 08 follows tasks 03 through 05 and does not depend on tasks 06 or 07.
 Task numbers do not define execution order.
 
+## Future direction
+
+[ADR-004](adr/004-retry-batch-wal-adoption.md) records the accepted future direction for coordinated retry and dedicated batch-WAL publication.
+A future orchestrator would discover published batches and adopt work through coordinated worker ownership.
+Individual and batch retries would acquire the same coordination lock before selection and retain the lock through durable persistence and source removal.
+The lock would exclude both other processes and other Fibers in the same process.
+The publication, adoption, locking, and recovery protocols need a separate design before implementation.
+
+The backend path and prefix define the DLQ store's retry lock scope.
+Independent DLQ stores use independent retry locks.
+Normal enqueue, task execution, failure recording, and inspection do not acquire the retry coordination lock.
+Explicit deletion keeps its existing store lock and does not cancel replay that a retry already selected.
+
+Successful locked source removal prevents a later cooperative retry from selecting those records.
+Crashes, uncertain publication, or failed source removal can still cause duplicate work on a later retry.
+The user accepts this window without requiring transactional source reconciliation or a source-dead-ID transfer journal.
+Ordinary pending-WAL integrity, worker ownership, and safe adoption cleanup remain necessary future design work.
+Silent enqueue suppression retains the existing task-loss risk.
+
+This direction does not change task 08's approved requirements, criteria, status, or current retry behavior.
+Task 07 retains its existing scope.
+Current non-goals, including periodic orphan-WAL adoption, remain applicable to the current tasks.
+This direction does not provide an atomic cross-store transaction or an exactly-once execution guarantee.
+Approval of this direction does not authorize implementation.
+
 ## Decisions
 
 - [ADR-001 — Public dead-task object model and iteration](adr/001-public-dead-task-object-model.md) (accepted)
 - [ADR-002 — Dead-task retry lifecycle](adr/002-dead-task-retry-lifecycle.md) (proposed)
 - [ADR-003 — Batch dead-task retry without a transaction](adr/003-batch-dead-task-retry.md) (accepted)
+- [ADR-004 — Future retry batch WAL publication and adoption](adr/004-retry-batch-wal-adoption.md) (accepted future direction; outside current tasks)
 
 ## Open questions for this draft
 
