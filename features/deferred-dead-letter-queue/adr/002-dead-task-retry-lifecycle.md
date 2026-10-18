@@ -30,6 +30,15 @@ A deletion failure can leave both copies. Concurrent operators can enqueue dupli
 
 Workers periodically discover WALs created by Rake or console processes. This improves immediacy but introduces a separate scheduler/storage ownership feature that the issue discussion explicitly deferred.
 
+
+## Approved batch extension
+
+[ADR-003](003-batch-dead-task-retry.md) defines collection retry for [task 08](../tasks/08-batch-retry-dead-tasks.md).
+The entry-only statements below describe the task-05 stage.
+ADR-003 extends retry ownership and bulk scope while preserving individual entry behavior and the other decisions below.
+Task 08 uses one batch per invocation, without an internal batch-size limit.
+Task 08 is ready for development. This extension does not change this ADR's status.
+
 ## Decision
 
 Use Option C with entry-owned enqueue, optional backend flush, and removal. Continue to defer Option D. This ADR remains proposed.

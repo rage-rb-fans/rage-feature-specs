@@ -90,6 +90,15 @@ Expose exact lookup as `DeadTasks#find_task(id)`. This avoids overriding Enumera
 
 Make `find(id)` perform exact lookup while trying to preserve block-based `find`. This creates two unrelated meanings under one method, risks changing the optional fallback callable and no-block forms, and makes `detect` inconsistent with its Enumerable alias. Reject this option.
 
+
+## Approved batch extension
+
+[ADR-003](003-batch-dead-task-retry.md) defines collection retry for [task 08](../tasks/08-batch-retry-dead-tasks.md).
+The entry-only statements below describe the task-05 stage.
+ADR-003 extends retry ownership and bulk scope while preserving individual entry behavior and the other decisions below.
+Task 08 uses one batch per invocation, without an internal batch-size limit.
+Task 08 is ready for development. This extension does not change this ADR's status.
+
 ## Decision
 
 Adopt traversal Option F with one-at-a-time selected-record attempts, cleanup option 1, and `find_by_id` for public exact lookup. A standard Ruby Enumerator preserves no-block `each` and holds at most the current decoded record. It avoids a custom stream protocol. Deterministic cancellation for partial external or lazy traversal is deferred. A future design can reconsider a closeable cursor or versioned storage. `find_by_id` avoids overriding `Enumerable#find` and `Enumerable#detect`. Those methods retain standard Ruby behavior.
