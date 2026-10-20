@@ -93,7 +93,7 @@ Lost: it can lose a task.
 ### Durability: fsync the pending-task WAL before the removal (selected)
 
 - Benefits: with the Disk backend, the task is durable in the WAL before its dead record is removed.
-- Drawbacks: one more `fsync` of the WAL and of its directory per call, on the reactor. The backend gets an optional `flush` method, called after a `respond_to?` check; a backend without it gives no such guarantee.
+- Drawbacks: one more `fsync` of the WAL and of its directory per call, on the reactor. The backend gets an optional `flush_tasks` method, called after a `respond_to?` check; a backend without it gives no such guarantee.
 
 ## Decision
 
@@ -103,16 +103,16 @@ Lost: it can lose a task.
 2. Resolve the task class from the class name stored in the record, with `Object.const_get(name, false)`. It must be a class that includes `Rage::Deferred::Task`. Otherwise raise `Rage::Deferred::DeadTaskRetryError` (with the `NameError` as `cause` when there is one); the record stays.
 3. Decode the stored context and read the positional and keyword arguments through `Rage::Deferred::Context`; a missing value becomes `[]` or `{}`. If that fails, raise `Rage::Deferred::DeadTaskContextDeserializationError` with the first error as `cause`; the record stays.
 4. Call the task class's `enqueue` with those arguments and no delay. This is the regular path: the `deferred.task.enqueue` span, the enqueue middleware, a new context with no attempts, and a new task id.
-5. Call the backend's `flush` when it has one. The Disk backend fsyncs the active WAL file and its directory.
+5. Call the backend's `flush_tasks` when it has one. The Disk backend fsyncs the active WAL file and its directory.
 6. Outside a running server (`Iodine.running?` is false), print a warning that names the task id and says that a server restart is required.
 7. Remove the record from the dead-tasks store. If the removal raises, raise `Rage::Deferred::DeadTaskRetryError` with that error as `cause`: the task is pending and its record is still dead.
 8. Return `true`.
 
-The removal (step 7) of the records replayed inside one `each` call is grouped into one rewrite of the store, applied when `each` ends in any way (see ADR-001). The framework never runs the removal for a record before steps 4 and 5 succeeded for it. An error raised in step 4 or 5 (`PushTimeout`, an enqueue middleware error, an `fsync` error) reaches the caller unchanged, and the record stays in the dead-tasks store.
+The removal (step 7) of the records replayed inside one `each` call is grouped into one rewrite of the store, applied when `each` ends in any way (see ADR-001). The framework never runs the removal for a record before steps 4 and 5 succeeded for it. An error raised in step 4 or 5 (`PushTimeout`, an enqueue middleware error, an `fsync` error) reaches the caller unchanged, and the record stays in the dead-tasks store. Since [ADR-005](005-storage-errors.md), a failure of `flush_tasks` in step 5 reaches the caller as `Rage::Deferred::StorageError`, and a lock timeout anywhere raises `StorageError` in place of `DeadTasksLockTimeout`.
 
 `Rage::Deferred::Queue#schedule` does nothing while `Iodine.running?` is false. Outside a running server, a task enqueued by `retry`, or by any other enqueue, is written to the WAL and runs after the next server boot.
 
-Replay is at-least-once: it may run a task twice, and with a backend that has `flush` it never loses one.
+Replay is at-least-once: it may run a task twice, and with a backend that has `flush_tasks` it never loses one.
 
 ## Consequences
 
@@ -122,7 +122,7 @@ Replay is at-least-once: it may run a task twice, and with a backend that has `f
 - `retry` checks that its record is still in the store before it enqueues. Two workers whose retries of the same record interleave (both checks before either removal), or a second `retry` after a failed removal, enqueue the task twice. The engineer accepted this for now; an idempotency key for replay is planned as later work, with its behavior still to be decided.
 - `each(&:retry)` costs, per record: one read of the whole store (the check), one enqueue, one `fsync` of the WAL and its directory, and one rewrite of the dead-tasks store.
 - `enqueued_at` and `attempts` of a task that dies after a replay describe the replay, not the first life of the task.
-- `Rage::Deferred::Context` gets no new method. The backend gets an optional `flush`; `Backends::Nil` has none, and its dead-tasks store is always empty, so `retry` returns `false` there.
+- `Rage::Deferred::Context` gets no new method. The backend gets an optional `flush_tasks`; `Backends::Nil` has none, and its dead-tasks store is always empty, so `retry` returns `false` there.
 - A new public error class, `Rage::Deferred::DeadTaskRetryError`, for a task class that cannot be used and for a removal that failed after the enqueue.
 - Every enqueue made outside a running server (the console, a Rake task) is persisted and not scheduled. It runs after the next server boot, not in a server that is already running; that is still task 06 (AC-17).
 - Telemetry handlers and enqueue middleware see a replay as one more enqueue of the task class. They cannot tell it from an enqueue made by the app.
