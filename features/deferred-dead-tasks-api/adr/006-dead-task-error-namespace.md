@@ -1,8 +1,10 @@
 ---
-status: accepted
+status: rejected
 ---
 
 # ADR-006: Dead-task errors under `DeadTask`
+
+> **Rejected on 2026-10-26.** It was dropped together with [ADR-005](005-storage-errors.md). `Rage::Deferred::DeadTaskRetryError` and `Rage::Deferred::DeadTaskContextDeserializationError` keep their names at the top of `Rage::Deferred` (Option A).
 
 ## Context
 

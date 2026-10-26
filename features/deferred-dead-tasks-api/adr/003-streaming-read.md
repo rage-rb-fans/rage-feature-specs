@@ -81,8 +81,6 @@ def each_dead_task
 end
 ```
 
-[ADR-005](005-storage-errors.md) replaces the `@raise` line: `@raise [Rage::Deferred::StorageError] if the dead-tasks store fails`. `DeadTasksLockTimeout` is removed.
-
 Every backend must keep these rules, which are stated without naming files:
 
 - It yields each task id at most once, in the order the tasks became dead, oldest first. For an id that is stored more than once, it yields the newest record, at the place of that record.

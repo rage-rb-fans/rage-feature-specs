@@ -1,8 +1,10 @@
 ---
-status: accepted
+status: rejected
 ---
 
 # ADR-005: Backend-neutral storage errors
+
+> **Rejected on 2026-10-26.** After a discussion with the maintainer, this error handling is skipped. Store errors keep propagating unchanged (Option A), and `Rage::Deferred::DeadTasksLockTimeout` stays. The commit that implemented it ([task 07](../tasks/07-storage-errors.md)) was dropped from the branch.
 
 ## Context
 

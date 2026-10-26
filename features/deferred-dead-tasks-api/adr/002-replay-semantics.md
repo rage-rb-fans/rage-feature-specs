@@ -108,7 +108,7 @@ Lost: it can lose a task.
 7. Remove the record from the dead-tasks store. If the removal raises, raise `Rage::Deferred::DeadTaskRetryError` with that error as `cause`: the task is pending and its record is still dead.
 8. Return `true`.
 
-The removal (step 7) of the records replayed inside one `each` call is grouped into one rewrite of the store, applied when `each` ends in any way (see ADR-001). The framework never runs the removal for a record before steps 4 and 5 succeeded for it. An error raised in step 4 or 5 (`PushTimeout`, an enqueue middleware error, an `fsync` error) reaches the caller unchanged, and the record stays in the dead-tasks store. Since [ADR-005](005-storage-errors.md), a failure of `flush_tasks` in step 5 reaches the caller as `Rage::Deferred::StorageError`, and a lock timeout anywhere raises `StorageError` in place of `DeadTasksLockTimeout`.
+The removal (step 7) of the records replayed inside one `each` call is grouped into one rewrite of the store, applied when `each` ends in any way (see ADR-001). The framework never runs the removal for a record before steps 4 and 5 succeeded for it. An error raised in step 4 or 5 (`PushTimeout`, an enqueue middleware error, an `fsync` error) reaches the caller unchanged, and the record stays in the dead-tasks store.
 
 `Rage::Deferred::Queue#schedule` does nothing while `Iodine.running?` is false. Outside a running server, a task enqueued by `retry`, or by any other enqueue, is written to the WAL and runs after the next server boot.
 

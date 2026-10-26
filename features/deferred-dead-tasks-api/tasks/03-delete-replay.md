@@ -278,9 +278,9 @@ Tested: HEAD 0b3baa7, files digest 9afd0c4 (CHANGELOG.md, lib/rage/deferred/back
 
 **Closing evidence**
 
-- TC-01 to TC-23: the engineer's check — the engineer declared the task done on 2026-10-20 without `task:close`. The implementation on branch `deferred-delete-and-retry` (HEAD `54dfc4c`, rage-rb/rage#411) is the source of truth for this task; where this file and that code differ, the code wins.
+- TC-01 to TC-23: the engineer's check — the engineer declared the task done on 2026-10-20 without `task:close`. The implementation on branch `deferred-delete-and-retry` (HEAD `11c2427`, rage-rb/rage#411) is the source of truth for this task; where this file and that code differ, the code wins.
 
 ## Result
 
 - Implementation PR: [rage-rb/rage#411](https://github.com/rage-rb/rage/pull/411)
-- Commits: `e722397` (deletion), `0b3baa7` (retry), `0086a55` (YARD and changelog), `54dfc4c` (directory `fsync` of a new WAL file), on branch `deferred-delete-and-retry`
+- Commits: `e722397` (deletion), `11c2427` (retry, with its YARD text and the directory `fsync` of a new WAL file), on branch `deferred-delete-and-retry`. The changelog entry is not committed yet.
