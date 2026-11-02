@@ -30,7 +30,7 @@ This task depends on tasks 03 and 04. [Task 07](07-recoverable-pending-wal-appen
 - Marshal and context-accessor exceptions use the dedicated context-deserialization error with the dead-task ID and original `cause`. Custom deserialization failures follow the same boundary. Keep the dead record intact. Do not add context shape, minimum-length, or extracted-value type validation.
 - Preserve public `Task.enqueue` without changes. Keep its unconditional `nil` return, signature, argument handling, middleware, telemetry, and multiple-yield behavior for Disk and Nil.
 - Ignore the public enqueue return value. Do not add acceptance bookkeeping, retry flags, receipt objects, or context hooks.
-- Accept silent middleware or telemetry suppression as a current limitation. Retry still performs optional flush, emits the applicable restart warning, removes the dead record, and returns `true`. No pending work need exist. This can lose the task. Defer acceptance detection and suppression retention to a future improvement.
+- Accept silent middleware suppression as a current limitation. Retry still performs optional flush, emits the applicable restart warning, removes the dead record, and returns `true`. No pending work need exist. This can lose the task. Defer acceptance detection and suppression retention to a future improvement.
 - If middleware or telemetry raises, propagate the exception and retain the dead record. Pending work can already exist. A repeated retry can duplicate that work.
 - Invoke the resolved task class's normal public `enqueue(*args, **kwargs)` path. Preserve fresh context construction and current enqueue middleware and telemetry. When the call reaches the queue, enqueue creates a fresh task ID and resets attempts. Do not reconstruct the old exception or preserve the old task ID, delay, scheduled time, logger context, or user context.
 - `DeadTask#retry` owns the existence check, class validation, argument decoding, public enqueue, optional flush, and removal. After enqueue returns normally, the entry calls `@backend.flush` only when `@backend.respond_to?(:flush)`. The entry then calls `@backend.remove_dead_tasks(@id)` and returns `true`. The entry does not branch on backend class.
@@ -78,7 +78,7 @@ The entry checks existence before enqueue. An intervening removal returns `false
 
 Disk implements `flush` by calling `@tasks_storage.sync!`. `respond_to?(:flush)` selects the optional operation; the check alone does not prove persistence. An adapter without `flush` completes its ordinary acknowledged persistence operation through successful enqueue. Buffered adapters must provide `flush`. Adapters with synchronous persistence need no flush method. This contract does not remove inherited backend defects.
 
-`Task.enqueue` remains unchanged and returns `nil` after normal completion. Retry does not inspect this return value. A normal return does not prove that the intended queue call occurred. Silent middleware or telemetry suppression can therefore remove the dead record without creating pending work. Acceptance detection and suppression retention remain future improvements.
+`Task.enqueue` remains unchanged and returns `nil` after normal completion. Retry does not inspect this return value. A normal return does not prove that the intended queue call occurred. Silent middleware suppression can therefore remove the dead record without creating pending work. Acceptance detection and suppression retention remain future improvements.
 
 The implementation also preserves the specified removal-error wrapper and restart warning. Silent suppression still reaches removal and the applicable warning. The retry Boolean reports sequence completion, not queue acceptance. Task 07 remains deferred. Retry does not wait for pending-WAL boundary or source-cleanup repairs.
 
@@ -121,7 +121,7 @@ Place the non-running guard at the top of `Queue#schedule`, not only in the dead
 - [ ] Retry resolves and validates the task class without `eval` and preserves the dead record on class or context failure.
 - [ ] Retry uses original positional/keyword arguments through a fresh normal enqueue with reset ID, attempts, context, middleware, and telemetry.
 - [ ] Public enqueue retains unconditional `nil` returns, its signature, middleware, and telemetry for Disk and Nil. Retry ignores the return value.
-- [ ] Silent middleware or telemetry suppression still permits flush, the applicable restart warning, removal, and `true` without pending work. Documentation states this risk.
+- [ ] Silent middleware suppression still permits flush, the applicable restart warning, removal, and `true` without pending work. Documentation states this risk.
 - [ ] Retry performs public enqueue, optional flush selected through `respond_to?(:flush)`, and exact-ID removal in that order.
 - [ ] Replay uses an independent mutable graph with Marshal-supported aliases and cycles under normal enqueue splat semantics. Immutable inspection values and their cached identities remain unchanged.
 - [ ] Retry uses the entry's original class and context after the existence check, without constructing another entry. Same-ID replacement does not change replay input; later exact-ID removal can delete the replacement. The original entry metadata and inspection cache remain unchanged. Entry actions work after snapshot cleanup.
@@ -148,7 +148,7 @@ Place the non-running guard at the top of `Queue#schedule`, not only in the dead
 - Verify retained entries retry after `first`, `find_by_id`, and block traversal release snapshot resources. Preserve ongoing traversal state.
 - Cover positional-only, keyword-only, mixed, and empty arguments under Ruby 3.3. Verify fresh ID/attempt/context state and enqueue middleware/telemetry execution.
 - Verify unchanged enqueue `nil` returns and signatures for Disk and Nil. Verify retry ignores the enqueue return value.
-- Cover silent middleware and telemetry suppression. Verify retry continues through optional flush, the applicable restart warning, removal, and `true` without pending work.
+- Cover silent middleware suppression. Verify retry continues through optional flush, the applicable restart warning, removal, and `true` without pending work.
 - Cover middleware and telemetry errors before and after pending work exists. Verify retained source records and possible pending work.
 - Verify documentation identifies suppression as an accepted task-loss risk and acceptance detection as a future improvement.
 - Mutate nested replay values in enqueue middleware, perform middleware, and `perform`. Compare live execution with pending-WAL recovery.

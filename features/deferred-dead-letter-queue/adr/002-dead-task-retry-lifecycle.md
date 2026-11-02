@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: accepted
 ---
 
 # ADR-002: Dead-task retry lifecycle
@@ -41,7 +41,7 @@ Task 08 is ready for development. This extension does not change this ADR's stat
 
 ## Decision
 
-Use Option C with entry-owned enqueue, optional backend flush, and removal. Continue to defer Option D. This ADR remains proposed.
+Use Option C with entry-owned enqueue, optional backend flush, and removal. Continue to defer Option D.
 
 Retry is a fresh enqueue of the original positional and keyword arguments under the current application code and configuration. It does not preserve the original logger/user context, task ID, attempt count, delay, or exception object. The entry removes the dead record after public enqueue and optional flush return normally. This sequence does not prove queue acceptance.
 
@@ -65,7 +65,7 @@ Synchronization confirms current bytes and directory metadata under the existing
 
 Keep public `Task.enqueue` unchanged. Preserve its unconditional `nil` return, signature, argument handling, middleware, telemetry, and multiple-yield behavior for Disk and Nil. Retry ignores the return value. Do not add acceptance bookkeeping, retry flags, receipt objects, or context hooks.
 
-A normal enqueue return does not prove that the intended queue call occurred. Middleware or telemetry can silently suppress that call. Retry still performs optional flush, emits the applicable restart warning, removes the dead record, and returns `true`. No pending work need exist. This accepted limitation can lose the task and has no at-least-once guarantee.
+A normal enqueue return does not prove that the intended queue call occurred. Enqueue middleware can silently suppress that call. Enqueue telemetry cannot: when a handler does not call `yield`, the tracer calls it. Retry still performs optional flush, emits the applicable restart warning, removes the dead record, and returns `true`. No pending work need exist. This accepted limitation can lose the task and has no at-least-once guarantee.
 
 Defer enqueue-acceptance detection and suppression retention to a future improvement. The retry Boolean reports completion of the enqueue/flush/removal sequence, not queue acceptance. This decision avoids a public enqueue change and ordinary enqueue bookkeeping.
 
@@ -87,13 +87,13 @@ Live retry permits the same nested mutations as ordinary pending-WAL recovery. O
 
 ## Consequences
 
-- Enqueue middleware and telemetry can observe and reject an operator retry using current code.
+- Enqueue middleware can observe and reject an operator retry using current code. Enqueue telemetry can observe it but cannot reject it.
 - Class renames, removed task classes, and undecodable arguments prevent retry but not metadata inspection.
 - Pending work can execute before explicit synchronization completes. Silent suppression can delete the source without creating pending work.
 - An optional flush failure propagates and preserves the dead record. The pending outcome remains uncertain. Repeating retry can duplicate work.
 - A crash or deletion failure after pending persistence can leave both records. A deletion failure raises the retry-specific error with its original cause.
 - Normal enqueue keeps its signature, unconditional `nil` return, middleware, telemetry, and timer batching. Only Disk retry requests explicit WAL synchronization.
-- Silent middleware or telemetry suppression does not retain the dead record. Acceptance detection remains future work. Independent replay decoding preserves immutable inspection. Existing pending-WAL defects remain outside task 05.
+- Silent middleware suppression does not retain the dead record. Acceptance detection remains future work. Independent replay decoding preserves immutable inspection. Existing pending-WAL defects remain outside task 05.
 - Concurrent retry/delete operations require operator coordination and do not provide cancellation or exactly-once guarantees. The existence check does not reserve the record or compare versions. Retry uses the entry's original class and arguments even after same-ID replacement. Later exact-ID removal can delete that replacement.
 - Out-of-process work that reaches the queue requires server restart for adoption. Silent suppression can produce the same warning without pending work.
 - The public API depends on the private serialized context layout only through `Rage::Deferred::Context` accessors used by the dedicated args/kwargs decoder; proactive compatibility validation is deferred to a future storage-version change.
