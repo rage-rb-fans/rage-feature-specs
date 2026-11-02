@@ -1,5 +1,5 @@
 ---
-status: ready-for-development
+status: draft
 ---
 
 # Retry multiple dead tasks by ID
@@ -92,7 +92,7 @@ end
 
 - Collect eligible IDs after each normal public enqueue return.
 - When the invocation has no eligible IDs, perform no explicit flush or removal.
-- After all per-ID enqueue attempts, call optional backend `flush` once when the backend provides that capability.
+- After all per-ID enqueue attempts, call optional backend `flush_tasks` once when the backend provides that capability.
 - After that flush returns normally, pass all eligible IDs to one backend `remove_dead_tasks` call.
 - Mark every eligible ID `true` after normal removal return, including a zero or reduced removal count.
 - Preserve failed and unselected dead records, subject to existing concurrent mutation behavior.

@@ -115,7 +115,7 @@ The collection and final active-entry shape, including the mutation-safe snapsho
   One decode preserves Marshal-supported shared references and cycles across positional and keyword arguments. Normal public enqueue splats can create new outer containers. The contract does not preserve those outer containers' identities. Ordinary Marshal and custom deserialization behavior still apply. Live replay permits the same nested mutations as ordinary pending-WAL recovery.
 
   Retry invokes normal public enqueue with those original arguments. Public enqueue builds a fresh context and runs current middleware and telemetry. When the call reaches the queue, enqueue creates a fresh task ID and resets attempts. Retry does not recreate the old exception or preserve old logger/user context. Marshal and Context-accessor failures retain the dedicated ID-and-cause error boundary.
-- REQ-14: `DeadTask#retry` owns an exact-ID existence check, class validation, original argument decoding, public enqueue, optional flush, and dead-record removal. The entry calls `task_class.enqueue(*args, **kwargs)`. Retry ignores the enqueue return value. After enqueue returns normally, the entry calls `@backend.flush` only when `@backend.respond_to?(:flush)`. The entry then calls `@backend.remove_dead_tasks(@id)` and returns `true`. A zero removal count also returns `true`.
+- REQ-14: `DeadTask#retry` owns an exact-ID existence check, class validation, original argument decoding, public enqueue, optional flush, and dead-record removal. The entry calls `task_class.enqueue(*args, **kwargs)`. Retry ignores the enqueue return value. After enqueue returns normally, the entry calls `@backend.flush_tasks` only when `@backend.respond_to?(:flush_tasks)`. The entry then calls `@backend.remove_dead_tasks(@id)` and returns `true`. A zero removal count also returns `true`.
 
   The result confirms completion of this sequence, not queue acceptance.
 
@@ -127,7 +127,7 @@ The collection and final active-entry shape, including the mutation-safe snapsho
 
   Retained entries can retry or delete after snapshot cleanup. Entry actions do not retain or change a traversal.
 
-  Disk exposes optional `flush`, which delegates to its internal `TasksStorage#sync!`. An adapter may omit `flush` when successful enqueue already completes its ordinary acknowledged persistence operation. Buffered adapters must provide `flush`. The capability check alone does not prove persistence. The contract does not require `flush` on every backend. Do not add no-op flush methods.
+  Disk exposes optional `flush_tasks`, which delegates to its internal `TasksStorage#sync!`. An adapter may omit `flush_tasks` when successful enqueue already completes its ordinary acknowledged persistence operation. Buffered adapters must provide `flush_tasks`. The capability check alone does not prove persistence. The contract does not require `flush_tasks` on every backend. Do not add no-op `flush_tasks` methods.
 
   Dead-task retry with Nil returns `false` before enqueue or flush.
 
@@ -224,7 +224,7 @@ Task 05 retains its individual retry contract. Task 06 retains its separate per-
   Selection checks existence once per invocation; the collection performs no later per-ID lookup.
 - REQ-34: Each selected usable ID receives one normal public enqueue call with task 05's replay semantics.
   Per-ID failures retain their dead records and do not stop later IDs.
-  After all per-ID enqueue attempts, the collection explicitly calls optional `flush` once before one bulk removal of normally completed enqueue IDs.
+  After all per-ID enqueue attempts, the collection explicitly calls optional `flush_tasks` once before one bulk removal of normally completed enqueue IDs.
   Timer flushes do not replace this barrier.
   Normal removal return completes each eligible ID, including zero or reduced removal counts.
   Shared failures stop the invocation and return no Hash. Pending work can already exist.
