@@ -22,7 +22,7 @@ Calling the queue directly can preserve logger and user context and reuse intern
 
 ### Option C: Perform a fresh public enqueue, flush if available, then remove
 
-Resolve the stored task class and decode args/kwargs. The entry calls normal public `enqueue`. Public enqueue builds a fresh context and runs current middleware and telemetry. When the call reaches the queue, enqueue creates a new task ID and resets attempts. The entry calls optional backend `flush` before deleting the dead record. Disk requires explicit WAL synchronization because normal enqueue uses timer-based synchronization.
+Resolve the stored task class and decode args/kwargs. The entry calls normal public `enqueue`. Public enqueue builds a fresh context and runs current middleware and telemetry. When the call reaches the queue, enqueue creates a new task ID and resets attempts. The entry calls optional backend `flush_tasks` before deleting the dead record. Disk requires explicit WAL synchronization because normal enqueue uses timer-based synchronization.
 
 A deletion failure can leave both copies. Concurrent operators can enqueue duplicates.
 
@@ -45,7 +45,7 @@ Use Option C with entry-owned enqueue, optional backend flush, and removal. Cont
 
 Retry is a fresh enqueue of the original positional and keyword arguments under the current application code and configuration. It does not preserve the original logger/user context, task ID, attempt count, delay, or exception object. The entry removes the dead record after public enqueue and optional flush return normally. This sequence does not prove queue acceptance.
 
-`DeadTask#retry` owns an exact-ID existence check, class validation, original argument decoding, enqueue, optional flush, and removal. The entry calls `task_class.enqueue(*args, **kwargs)`. The entry ignores the enqueue return value. After enqueue returns normally, the entry calls `@backend.flush` only when `@backend.respond_to?(:flush)`. The entry then calls `@backend.remove_dead_tasks(@id)` and returns `true`. A zero removal count also returns `true`.
+`DeadTask#retry` owns an exact-ID existence check, class validation, original argument decoding, enqueue, optional flush, and removal. The entry calls `task_class.enqueue(*args, **kwargs)`. The entry ignores the enqueue return value. After enqueue returns normally, the entry calls `@backend.flush_tasks` only when `@backend.respond_to?(:flush_tasks)`. The entry then calls `@backend.remove_dead_tasks(@id)` and returns `true`. A zero removal count also returns `true`.
 
 `DeadTask` privately retains the identical shared backend supplied by its collection. The entry calls `@backend.find_dead_task(@id)` only to check existence before enqueue. A missing record returns `false`; existing selected decoding and diagnostic rules still apply. Retry discards the returned record. Retry validates the entry's `@task_class` and decodes the entry's `@__context`.
 
@@ -53,9 +53,9 @@ Retry constructs no second entry. The original metadata and inspection cache rem
 
 `DeadTasks` has no `retry` method. ID-based callers use `find_by_id(id)` and call `entry.retry` when lookup returns an entry. The caller returns `false` when lookup returns `nil`. The entry checks existence before enqueue without replacing the first lookup's class or arguments. No second retry implementation exists.
 
-Disk exposes optional `flush`, which delegates to internal `TasksStorage#sync!`. An adapter may omit `flush` when successful enqueue already completes its ordinary acknowledged persistence operation. A buffered adapter must provide `flush`. The capability check alone does not prove persistence. Adapter-conformance coverage must verify ordinary acknowledged persistence semantics.
+Disk exposes optional `flush_tasks`, which delegates to internal `TasksStorage#sync!`. An adapter may omit `flush_tasks` when successful enqueue already completes its ordinary acknowledged persistence operation. A buffered adapter must provide `flush_tasks`. The capability check alone does not prove persistence. Adapter-conformance coverage must verify ordinary acknowledged persistence semantics.
 
-Do not require `flush` on every backend. Do not add no-op flush methods. Dead-task retry with Nil returns `false` before enqueue or flush. The design adds no backend retry orchestrator, application callback block, retry flag, enqueue-context hook, or shared synchronization parameter.
+Do not require `flush_tasks` on every backend. Do not add no-op `flush_tasks` methods. Dead-task retry with Nil returns `false` before enqueue or flush. The design adds no backend retry orchestrator, application callback block, retry flag, enqueue-context hook, or shared synchronization parameter.
 
 Disk synchronizes the currently active WAL file, then the storage directory. Failed synchronization propagates and preserves the source dead record. Explicit synchronization leaves timer dirty state untouched. Existing timer batching remains unchanged.
 

@@ -61,17 +61,17 @@ Task 02's open descriptor continues reading its fixed view after deletion rename
 
 ## Acceptance criteria
 
-- [ ] Single-entry deletion returns `true` only for an actual removal and `false` for missing/stale entries.
-- [ ] Entries privately retain the identical backend used by the collection and queue. Entry deletion needs no collection, action handler, or traversal resources.
-- [ ] Collection deletion accepts one String or one flat Array of Strings with exact documented results and validation-before-mutation.
-- [ ] Collection deletion de-duplicates Array members and handles missing, stale, and empty Array inputs with exact documented results.
-- [ ] Collection deletion rejects zero arguments, multiple arguments, nested Arrays, and other non-String values without storage mutation.
-- [ ] Disk delegates bulk deletion to one task-01 compaction; Nil returns zero without side effects.
-- [ ] Deleting during stable enumeration processes each yielded starting-snapshot entry exactly once and closes snapshot resources. Rescued selected failures print the task 02 diagnostic and remain stored.
-- [ ] Documentation distinguishes mutation-safe small-set entry deletion from the one-compaction bulk-delete pattern and states both the O(selected IDs) accumulator and potential O(N²) repeated-compaction costs.
-- [ ] Concurrent/overlapping deletions preserve unrelated records and divide successful counts according to lock order.
-- [ ] Lock and filesystem failures are propagated without false success or payload disclosure.
-- [ ] Public deletion APIs have complete YARD documentation.
+- [ ] TC-01 (core) Single-entry deletion returns `true` only for an actual removal and `false` for missing/stale entries.
+- [ ] TC-02 (edge) Entries privately retain the identical backend used by the collection and queue. Entry deletion needs no collection, action handler, or traversal resources.
+- [ ] TC-03 (core) Collection deletion accepts one String or one flat Array of Strings with exact documented results and validation-before-mutation.
+- [ ] TC-04 (core) Collection deletion de-duplicates Array members and handles missing, stale, and empty Array inputs with exact documented results.
+- [ ] TC-05 (core) Collection deletion rejects zero arguments, multiple arguments, nested Arrays, and other non-String values without storage mutation.
+- [ ] TC-06 (core) Disk delegates bulk deletion to one task-01 compaction; Nil returns zero without side effects.
+- [ ] TC-07 (core) Deleting during stable enumeration processes each yielded starting-snapshot entry exactly once and closes snapshot resources. Rescued selected failures print the task 02 diagnostic and remain stored.
+- [ ] TC-08 (edge) Documentation distinguishes mutation-safe small-set entry deletion from the one-compaction bulk-delete pattern and states both the O(selected IDs) accumulator and potential O(N²) repeated-compaction costs.
+- [ ] TC-09 (edge) Concurrent/overlapping deletions preserve unrelated records and divide successful counts according to lock order.
+- [ ] TC-10 (edge) Lock and filesystem failures are propagated without false success or payload disclosure.
+- [ ] TC-11 (edge) Public deletion APIs have complete YARD documentation.
 
 ## Verification
 
@@ -80,14 +80,22 @@ Task 02's open descriptor continues reading its fixed view after deletion rename
 - Verify enumeration and exact lookup construct entries with the identical shared backend. Verify both backend initialization orders.
 - Verify entry deletion calls `remove_dead_tasks(@id)` directly without lookup, class resolution, argument decoding, or collection delegation.
 - Verify retained entries delete after snapshot cleanup. Verify metadata and successful inspection caches remain unchanged.
-- Verify entries expose no backend accessor or setter and retain no collection, action handler, or traversal resources.
-- Verify each invalid input performs no backend removal. Verify an empty Array performs no backend removal. Verify Nil performs no filesystem work.
+- Entries exposing no backend accessor and retaining no collection or traversal resources get no test: a test that a method or ivar is absent cannot fail for a Rage bug. A retained entry deleting after its traversal ended shows that the entry needs no traversal resources.
+- Verify each invalid input performs no backend removal. Verify an empty Array performs no backend removal. Verify Nil returns `0`; `Backends::Nil` has no filesystem code to check.
 - Exercise `each(&:delete)`, selective deletion, concurrent append, and rename compaction without skipped or duplicated yielded entries. Verify descriptor cleanup.
 - Add a rescued selected failure. Verify its diagnostic, continued traversal, retained record, and deletion of every later yielded entry.
 - Verify a collection-level call with many selected IDs delegates once to `remove_dead_tasks`, while repeated entry deletion remains immediate and invokes one removal per entry.
-- Cover two backend instances/fibers deleting overlapping IDs, lock timeout, temp-write/rename/directory-fsync failures, and preservation of unrelated records using task 01's existing failure hooks.
+- Cover two backend instances deleting overlapping IDs at once (one waiting for the lock the other holds) with preservation of unrelated records, and a lock timeout from entry deletion that keeps the record. Waiting for the lock stays covered by task 01's Disk specs. The public layer has no `rescue`, so filesystem errors pass through it unchanged; Disk removal failures are covered in the Disk spec.
 - Run focused deletion and snapshot specs, `bundle exec rspec spec/deferred/backends/disk_spec.rb`, the broader `bundle exec rspec spec/deferred`, and RuboCop for changed files.
+
+**Notes**
+
+- Core tests: approved 2026-11-02 for TC-01, TC-03–TC-07, written after the code.
+- Edge tests: done 2026-11-02.
+- Reviewed: 2026-11-02.
+- Decided: review finding S1 rejected, with no docs and no follow-up task. S1: a long public `delete` holds the dead-task lock longer than about 1.5 s, so a worker's `add_dead_task` in `Queue#abandon_task` raises `DeadTasksLockTimeout`; the task stays pending and runs again after restart, and for an immediate task the WAL may stop rotating.
+- Decided: code-reading finding dropped for now, with no criterion. `DeadTask#inspect` shows `@__backend`, so `p entry` or an IRB echo prints the Disk backend, including the serialized arguments of pending delayed tasks.
 
 ## Result
 
-- Implementation PR:
+- Implementation PR: https://github.com/rage-rb/rage/pull/411
