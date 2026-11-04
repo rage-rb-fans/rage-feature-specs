@@ -38,5 +38,7 @@ Parent feature specifications have no lifecycle status. Each task declares its o
 - `draft` — requirements are being discussed or amended.
 - `ready-for-development` — the published task is approved for implementation.
 - `done` — implementation is merged, verified, and linked from the Result section.
+- `rejected` — the task will not be implemented. A note at the top of the file says when and
+  why. The file stays in place, so links to it keep working.
 
 Feature directories remain in place so links to specifications, tasks, and decisions stay stable. The parent task checklist summarizes progress without gating independently reviewable tasks.

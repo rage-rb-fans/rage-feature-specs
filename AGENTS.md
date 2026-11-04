@@ -17,6 +17,7 @@ Parent feature specifications have no lifecycle status. Each task advances indep
 - `draft`: requirements are still being developed or amended. Do not implement it.
 - `ready-for-development`: published and explicitly approved for implementation.
 - `done`: implementation merged and verified. The Result section must link to the implementation.
+- `rejected`: decided not to implement. Do not implement it. Keep the file, with a short note at the top saying when and why it was rejected.
 
 ADR statuses use the values defined by the ADR itself, such as `proposed`, `accepted`, or `superseded`.
 
