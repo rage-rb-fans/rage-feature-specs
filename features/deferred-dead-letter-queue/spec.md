@@ -115,11 +115,11 @@ The collection and final active-entry shape, including the mutation-safe snapsho
   One decode preserves Marshal-supported shared references and cycles across positional and keyword arguments. Normal public enqueue splats can create new outer containers. The contract does not preserve those outer containers' identities. Ordinary Marshal and custom deserialization behavior still apply. Live replay permits the same nested mutations as ordinary pending-WAL recovery.
 
   Retry invokes normal public enqueue with those original arguments. Public enqueue builds a fresh context and runs current middleware and telemetry. When the call reaches the queue, enqueue creates a fresh task ID and resets attempts. Retry does not recreate the old exception or preserve old logger/user context. Marshal and Context-accessor failures retain the dedicated ID-and-cause error boundary.
-- REQ-14: `DeadTask#retry` owns an exact-ID existence check, class validation, original argument decoding, public enqueue, optional flush, and dead-record removal. The entry calls `task_class.enqueue(*args, **kwargs)`. Retry ignores the enqueue return value. After enqueue returns normally, the entry calls `@backend.flush` only when `@backend.respond_to?(:flush)`. The entry then calls `@backend.remove_dead_tasks(@id)` and returns `true`. A zero removal count also returns `true`.
+- REQ-14: `DeadTask#retry` owns an exact-ID existence check, class validation, original argument decoding, public enqueue, optional flush, and dead-record removal. The entry calls `task_class.enqueue(*args, **kwargs)`. Retry ignores the enqueue return value. After enqueue returns normally, the entry calls `@backend.flush_tasks` only when `@backend.respond_to?(:flush_tasks)`. The entry then calls `@backend.remove_dead_tasks(@id)` and returns `true`. A zero removal count also returns `true`.
 
   The result confirms completion of this sequence, not queue acceptance.
 
-  Silent middleware or telemetry suppression can prevent pending work without raising. Retry still performs optional flush, emits the applicable restart warning, and removes the dead record. This accepted limitation can lose the task. Enqueue-acceptance detection and suppression retention are future improvements under REQ-30.
+  Silent middleware suppression can prevent pending work without raising. Retry still performs optional flush, emits the applicable restart warning, and removes the dead record. This accepted limitation can lose the task. Enqueue-acceptance detection and suppression retention are future improvements under REQ-30.
 
   Middleware and telemetry exceptions propagate even after pending work exists. The dead record remains intact. Repeating retry can therefore duplicate work.
 
@@ -127,7 +127,7 @@ The collection and final active-entry shape, including the mutation-safe snapsho
 
   Retained entries can retry or delete after snapshot cleanup. Entry actions do not retain or change a traversal.
 
-  Disk exposes optional `flush`, which delegates to its internal `TasksStorage#sync!`. An adapter may omit `flush` when successful enqueue already completes its ordinary acknowledged persistence operation. Buffered adapters must provide `flush`. The capability check alone does not prove persistence. The contract does not require `flush` on every backend. Do not add no-op flush methods.
+  Disk exposes optional `flush_tasks`, which delegates to its internal `TasksStorage#sync!`. An adapter may omit `flush_tasks` when successful enqueue already completes its ordinary acknowledged persistence operation. Buffered adapters must provide `flush_tasks`. The capability check alone does not prove persistence. The contract does not require `flush_tasks` on every backend. Do not add no-op `flush_tasks` methods.
 
   Dead-task retry with Nil returns `false` before enqueue or flush.
 
@@ -199,7 +199,7 @@ The fresh-enqueue and out-of-process behavior is described in [ADR-002](adr/002-
 
 - REQ-30: Public `Task.enqueue` retains its unconditional `nil` return and existing signature, middleware, and telemetry behavior for Disk and Nil. Retry ignores that return value. Do not add acceptance bookkeeping, retry flags, receipt objects, or context hooks. Preserve existing multiple-yield effects and exception propagation.
 
-  Enqueue-acceptance detection and retention after silent middleware or telemetry suppression are deferred improvements. A normal enqueue return does not prove pending work exists. Retry can therefore return `true` and delete a suppressed task without creating pending work. This accepted limitation has no at-least-once guarantee.
+  Enqueue-acceptance detection and retention after silent middleware suppression are deferred improvements. A normal enqueue return does not prove pending work exists. Retry can therefore return `true` and delete a suppressed task without creating pending work. This accepted limitation has no at-least-once guarantee.
 
 - REQ-31: Deferred task 07 owns the following future behavior independently of retry. Pending-WAL adoption and recovery preserve complete record boundaries before further appends. Task 07 repairs unfinished final suffixes while preserving complete prior records. A failed append cannot authorize success for an unfinished record. Later appends either restore a safe boundary or raise. Recovery/rotation source cleanup requires confirmed replacement file and directory durability. Boundary work uses bounded buffers and avoids complete-WAL scans on known-clean ordinary appends.
 
@@ -224,7 +224,7 @@ Task 05 retains its individual retry contract. Task 06 retains its separate per-
   Selection checks existence once per invocation; the collection performs no later per-ID lookup.
 - REQ-34: Each selected usable ID receives one normal public enqueue call with task 05's replay semantics.
   Per-ID failures retain their dead records and do not stop later IDs.
-  After all per-ID enqueue attempts, the collection explicitly calls optional `flush` once before one bulk removal of normally completed enqueue IDs.
+  After all per-ID enqueue attempts, the collection explicitly calls optional `flush_tasks` once before one bulk removal of normally completed enqueue IDs.
   Timer flushes do not replace this barrier.
   Normal removal return completes each eligible ID, including zero or reduced removal counts.
   Shared failures stop the invocation and return no Hash. Pending work can already exist.
@@ -247,7 +247,7 @@ Task 05 retains its individual retry contract. Task 06 retains its separate per-
 
 - Periodically discovering or adopting WAL files created by consoles, Rake processes, or unrelated processes.
 - Exactly-once replay or an atomic transaction spanning the pending WAL and dead-tasks file.
-- Enqueue-acceptance detection or dead-record retention after silent middleware or telemetry suppression.
+- Enqueue-acceptance detection or dead-record retention after silent middleware suppression.
 - Automatic retention, pruning, quotas, archival, or dead-task metrics.
 - A web dashboard, HTTP/JSON management endpoint, authentication system, or remote administration protocol.
 - Searching, filtering, or sorting by arbitrary record fields beyond oldest-first enumeration and exact-ID lookup.
@@ -308,7 +308,7 @@ Task 05 retains its individual retry contract. Task 06 retains its separate per-
   Task 08 adds collection retry coverage under AC-13 through AC-15.
   Coverage verifies entry snapshot replay, existence checks, replacement races, unchanged inspection caches, shared backend identity, and actions after snapshot cleanup.
 
-  Coverage verifies unchanged enqueue `nil` returns for Disk and Nil. It verifies ignored return values, silent middleware and telemetry suppression, continued removal, and the applicable restart warning. It covers exceptions before and after pending work exists. It verifies mutable replay aliases and cycles, normal splat behavior, stable frozen inspection caches, and live/recovered mutability.
+  Coverage verifies unchanged enqueue `nil` returns for Disk and Nil. It verifies ignored return values, silent middleware suppression, continued removal, and the applicable restart warning. It covers exceptions before and after pending work exists. It verifies mutable replay aliases and cycles, normal splat behavior, stable frozen inspection caches, and live/recovered mutability.
 
   Adapter conformance verifies ordinary acknowledged enqueue without flush and buffered enqueue with flush. Coverage verifies active-WAL/directory synchronization and unchanged timer dirty state. Inherited WAL repair coverage belongs only to deferred task 07. Coverage includes retry and delete failures, races, non-running Iodine behavior, Rake output, and Rake status. Argument replay remains Ruby 3.3 compatible.
 
@@ -367,7 +367,7 @@ Approval of this direction does not authorize implementation.
 ## Decisions
 
 - [ADR-001 — Public dead-task object model and iteration](adr/001-public-dead-task-object-model.md) (accepted)
-- [ADR-002 — Dead-task retry lifecycle](adr/002-dead-task-retry-lifecycle.md) (proposed)
+- [ADR-002 — Dead-task retry lifecycle](adr/002-dead-task-retry-lifecycle.md) (accepted)
 - [ADR-003 — Batch dead-task retry without a transaction](adr/003-batch-dead-task-retry.md) (accepted)
 - [ADR-004 — Future retry batch WAL publication and adoption](adr/004-retry-batch-wal-adoption.md) (accepted future direction; outside current tasks)
 
