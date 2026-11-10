@@ -37,7 +37,9 @@ Workers periodically discover WALs created by Rake or console processes. This im
 The entry-only statements below describe the task-05 stage.
 ADR-003 extends retry ownership and bulk scope while preserving individual entry behavior and the other decisions below.
 Task 08 uses one batch per invocation, without an internal batch-size limit.
-Task 08 is ready for development. This extension does not change this ADR's status.
+Task 08 remains `draft` while [ADR-004](004-retry-batch-wal-adoption.md)'s separate retry coordination lock and task-08 Q-04 through Q-06 are specified.
+The entry-only statements below describe task 05's stage. Task 08 wraps both retry surfaces in that separate lock while preserving public enqueue, existing pending WALs, normal scheduling, and entry replay/results/errors.
+The existing dead-store lock remains short-lived. Candidate write observation/removal after enqueue errors is not approved; the current preservation/error contract and REQ-30 remain applicable. This amendment does not change this ADR's status.
 
 ## Decision
 

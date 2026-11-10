@@ -39,6 +39,8 @@ The user considers that work excessive for the current operator API.
 ## Decision
 
 Use Option B for task 08. The user approved this decision on 2026-10-18.
+[ADR-004](004-retry-batch-wal-adoption.md) now adds a separate retry lock spanning selection, public enqueue, optional `flush_tasks`, and source removal for both retry surfaces.
+Task 08 remains `draft` with candidate write-observation/removal-after-error, nesting, and result/warning decisions open. Its current per-ID error/source-preservation and warning rules remain the fallback; this amendment approves no observer API or changed removal eligibility.
 
 Add `DeadTasks#retry(id_or_ids)` with the same input forms as collection deletion.
 Process all distinct requested IDs as one batch per invocation.
@@ -57,7 +59,7 @@ Backends do not run middleware or own retry orchestration.
 This extension replaces only the earlier prohibition on collection retry and the requirement for one sole retry workflow.
 The extension also replaces the parent's bulk-retry non-goal.
 Batch warning counts and per-ID error results follow task 08.
-Task 05's requirements remain the contract for individual entry retry.
+Task 05's requirements remain the stage-specific contract for individual entry retry; task 08 adds the shared retry lock around that sequence.
 ADR-001's traversal, ownership, snapshot, and inspection decisions remain applicable.
 ADR-002's fresh-enqueue, optional-flush, suppression, and recovery limits remain applicable.
 Task 06 retains its separate per-ID Rake workflow.
@@ -66,7 +68,7 @@ Disk selects current requested winners once per invocation before application co
 Each selected record supplies replay input; the collection performs no later per-ID existence check.
 A concurrent removal does not cancel selected work.
 A concurrent same-ID replacement does not change replay input but can be removed by later exact-ID deletion.
-No lock spans application code.
+The separate retry lock spans application code; the existing dead-store lock does not. Normal enqueue and scheduling use the existing pending WAL, without a dedicated retry WAL or destination routing.
 
 Periodic synchronization can occur during batch processing.
 The collection still requires a final explicit optional flush before bulk removal.
@@ -83,4 +85,4 @@ This boundary does not establish complete crash-recovery safety or prove queue a
 - Shared failures stop the invocation and provide no result Hash. Pending work can already exist.
 - A crash before bulk removal can leave pending copies for every eligible requested ID. The duplication window covers the complete invocation.
 - Silent suppression can still remove dead records without creating pending work. Acceptance detection remains deferred.
-- Entry retry and normal enqueue retain their existing behavior. The new collection API needs dedicated YARD and operator guidance.
+- Entry retry gains the shared retry lock; its other behavior and normal enqueue remain compatible. The new collection API needs dedicated YARD and operator guidance.
