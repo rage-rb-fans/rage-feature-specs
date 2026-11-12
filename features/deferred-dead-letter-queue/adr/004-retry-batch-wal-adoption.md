@@ -42,7 +42,10 @@ The user accepts the non-transactional persistence-to-removal window and keeps f
 
 Accept the revised Option B for task 08. The separate retry lock is included in this task; the earlier dedicated-WAL, destination-routing, and adoption-before-execution direction is superseded.
 Both retry surfaces use existing pending WALs and normal scheduling through unchanged public enqueue. Future WAL publication/durability and orphan-adoption protocols remain separately specified work.
-This decision does not approve candidate write observation or removal after enqueue errors, close task-08 Q-04 through Q-06, change readiness, or authorize implementation.
+The collection must not know about locking, call a lock/coordination-scope API, or manage a coordination block.
+The internal owner of the full invocation-spanning lifecycle is open under task-08 Q-07. Earlier collection-orchestration ownership and service/backend-orchestrator prohibitions need a scoped decision; no replacement owner or private interface is approved here.
+The user supersedes the earlier durable-write-after-error removal decision with Q-04's simpler retain-on-error policy: only normal public enqueue returns feed the final optional flush and bulk removal. Any enqueue exception retains its source and original per-ID error, including after a pending write or during scheduling; later IDs continue.
+Add no private acknowledgement, receipts, or write-candidate tracking. No normal returns means no explicit flush/removal; failed flush remains a shared failure that removes no requested source. Q-05 through Q-07 remain open, and readiness/implementation are not authorized.
 
 The intended batch writer sequence is:
 
@@ -50,7 +53,7 @@ The intended batch writer sequence is:
 2. Select source dead records after acquiring the coordination lock.
 3. Run normal public enqueue, middleware, and telemetry with fresh replay contexts into the existing pending WAL, preserving current scheduling.
 4. Call optional `flush_tasks` once after per-ID attempts when eligible IDs exist.
-5. Remove eligible source dead IDs in one bulk call after that explicit persistence barrier, retaining the fallback error/source-preservation rules until a different policy is approved.
+5. Remove only normally completed enqueue IDs in one bulk call after that explicit persistence barrier. Retain every source whose enqueue raised, regardless of prior pending writes.
 6. Release the coordination lock through `ensure`.
 
 Use a separate stable retry-lock file alongside the existing dead-store lock file; both use `flock`, without mutexes.
@@ -84,8 +87,9 @@ Adoption needs safe worker ownership, ordinary at-least-once pending-WAL recover
 Those storage requirements do not imply exactly-once source transfer or execution.
 
 In-process retry keeps normal scheduling; additional tasks enqueued by middleware keep their ordinary queue/WAL destination.
-Private observation could correlate pending writes with source DLQ IDs without destination routing or a public enqueue rewrite. Exact source/pending attribution and complete-write/durability acknowledgement remain open: backend return alone does not prove complete framing or persistence.
-REQ-30 remains applicable; no observer API, suppression-policy change, or source removal after an enqueue error is approved.
+An enqueue exception does not prove that no pending copy exists. After a scheduling failure, that copy may wait for startup/recovery, currently usually restart. The retained DLQ source allows an operator retry, accepting that recovery or a later retry can duplicate work.
+Document this tradeoff in YARD and operator guidance. Do not automatically enqueue another copy or move pending work back into the DLQ because scheduling failed; scheduling recovery is separate work.
+REQ-30 retains its prohibition on acknowledgement/acceptance bookkeeping and public enqueue changes. Silent-suppression compatibility remains unchanged.
 Current orphan recovery does not provide this coordinated protocol.
 The orchestrator cannot append to or replace a worker-owned WAL without an agreed ownership handoff.
 
@@ -110,7 +114,7 @@ The orchestrator cannot append to or replace a worker-owned WAL without an agree
 - Q-03: Define ordinary at-least-once pending-WAL recovery for interrupted publication and merge.
   Define when adoption can safely remove published source files after durable worker persistence.
   Decides: the user during future task drafting.
-- Q-04: May an exact source be removed after acknowledged pending writes and a later enqueue error? Define private correlation, multiple/unrelated middleware writes, Fiber isolation, complete-write/durability acknowledgement, original-error results, and warnings. No routing or observer API is approved.
-  Decides: the user during task 08 drafting, with existing error/source-preservation rules as the fallback.
 - Q-05: Define timeout/error, cancellation, same-store backend-instance handling, nested retry, and ordering with additional locks without Fiber deadlock. The retry lock precedes the short dead-store lock; deletion remains independent.
   Decides: the user during task 08 drafting.
+
+- Q-07: Select an internal full-invocation lifecycle owner below the collection boundary, with any scoped amendment to the earlier orchestration/service prohibitions. The collection must remain unaware of locking; accepted lock scope and behavior remain unchanged. Decides: the user during task 08 drafting.

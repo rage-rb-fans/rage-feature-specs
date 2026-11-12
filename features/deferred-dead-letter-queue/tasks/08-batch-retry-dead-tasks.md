@@ -16,7 +16,7 @@ On Disk, repeated entry retry can scan and rewrite the store once per ID.
 This task adds a collection operation and a separate retry coordination lock, without a transaction between pending and dead storage.
 Both individual and collection retry use the existing pending WAL and normal scheduling. Add no dedicated retry WAL, enqueue destination routing, or scheduling barrier.
 Stronger WAL publication/durability protocol and orphan adoption remain separate future work, without a new task dependency or protocol assumed here.
-This task remains `draft`: Q-04 through Q-06 in Design require user decisions. Until amended explicitly, the result, source-preservation, and warning rules below remain the fallback contract.
+This task remains `draft`: Q-05 through Q-07 in Design require user decisions. Q-04 is resolved by retaining the original DLQ record after every public enqueue exception, without private write acknowledgement.
 This task depends on tasks 03 through 05.
 Task 07 remains independent future work.
 Task 06 retains its separate per-ID Rake workflow.
@@ -73,6 +73,7 @@ end
 - Process all distinct requested IDs as one batch per invocation.
 - Do not add an internal batch-size limit, input partitioning, or new configuration.
 - Select all requested records through one shared-backend lookup operation.
+- `DeadTasks` must have no knowledge of storage locking. It must not acquire/release locks, invoke a lock or coordination-scope API, or wrap replay in a block whose purpose is managing that scope. Keep locking below the collection boundary; the invocation-spanning lifecycle owner remains open under Q-07.
 - Acquire the retry coordination lock before selecting source records. Individual and collection retry of the same Disk DLQ store use the same retry lock.
 - Use a separate stable retry-lock file alongside the existing dead-store lock file. Both use `flock`, without mutexes. Backend path and prefix define the store scope; independent stores use independent locks.
 - Acquire the retry lock first and retain it through middleware, the explicit optional `flush_tasks`, and source removal. Release it through `ensure` on every exit.
@@ -97,7 +98,7 @@ end
 - Call the resolved class's normal public `enqueue(*args, **kwargs)` once per usable requested ID.
 - Preserve fresh task IDs, reset attempts, current middleware, and current telemetry.
 - Keep public `Task.enqueue` unchanged. Ignore its return value.
-- Preserve silent middleware suppression and multiple-yield behavior. Telemetry cannot suppress enqueue under ADR-002. This task does not approve enqueue-acceptance detection; Q-04 records a candidate only.
+- Preserve silent middleware suppression and multiple-yield behavior. Telemetry cannot suppress enqueue under ADR-002. Add no private write acknowledgement, receipts, or enqueue-acceptance bookkeeping.
 
 ### Flush, removal, and failures
 
@@ -113,7 +114,9 @@ end
 - After any shared failure, stop the invocation. Pending work can already exist.
 - If lookup raises, perform no enqueue or removal through this invocation.
 - A raised call returns no result Hash. Do not claim complete partial-outcome reporting after shared failure.
-- A public enqueue exception can occur after pending work exists. Preserve the dead record and report that exception for the ID under the fallback contract. Removing an exactly correlated source after acknowledged writes and a later enqueue error is only a candidate in Q-04.
+- A public enqueue exception at any point, including after a pending write or during scheduling, retains the original dead record and the original per-ID error. Continue with later IDs; never include the failing source in bulk removal.
+- An exception does not prove that no pending copy exists. If scheduling failed after a write, that copy can wait for startup/recovery, currently usually restart. Retaining the DLQ source lets the operator retry, accepting that recovery or a later retry can duplicate work.
+- Do not automatically enqueue another copy or move the pending task back into the DLQ because scheduling failed. Scheduling recovery remains separate work.
 - Flush and removal failures leave uncertain pending outcomes. Repeating requested IDs can create duplicate work.
 - A crash before bulk removal, including after pending publication/persistence, can leave pending copies for every eligible requested ID. The user accepts this duplication window without source reconciliation, a source-dead-ID transfer journal, or cross-store deduplication.
 - The duplication window covers the complete invocation, including work persisted by timer flushes.
@@ -134,30 +137,34 @@ end
 - Preserve entry `retry` behavior except for the shared retry lock; preserve collection `delete`, exact `find_by_id`, and standard Enumerable behavior.
 - Preserve Ruby 3.3.0 support and existing backend configuration.
 - Add YARD for the collection API and any public error documentation affected by this task.
-- Document input, results, shared failures, both lock scopes, races, suppression, storage cost, and restart requirements, including the agreed Q-04 through Q-06 outcomes.
+- Document input, results, shared failures, both lock scopes, races, suppression, storage cost, and restart requirements, including the resolved Q-04 retain-on-error decision and remaining Q-05 through Q-07 outcomes.
+- YARD and operator guidance must explain that enqueue failure retains the original DLQ source and original error even if a pending copy was written. That copy may wait for startup/recovery after scheduling failure; an operator's later retry can create duplicates. Retry adds no automatic replacement enqueue or pending-to-DLQ transfer.
 - Add a changelog entry for the collection API and retry coordination. Do not change Rake commands in this task.
 - Preserve trusted local Marshal assumptions. Add no endpoint, network I/O, authentication mechanism, or payload diagnostic.
 
 ## Design
 
-The collection owns batch orchestration. Each invocation retains its own input, results, and selected records.
+The collection exposes the public API, input-validation, and per-ID result contract; it has no locking responsibility or awareness.
+The earlier assignment of complete batch orchestration to the collection is pending Q-07 because the retry lock must span the full invocation below that boundary.
+Each invocation retains its own input, results, and selected records.
 The memoized collection retains no invocation state after the call.
 Overlapping or nested invocations do not share progress or eligible-ID buffers.
 
 Add a private backend multi-ID lookup capability, such as `find_dead_tasks(ids)`.
 Disk returns selected records and per-ID decoding errors for all requested IDs.
 Nil returns no records.
-The collection must not branch on the backend class.
+Keep backend-specific behavior inside the backend implementations.
 Future adapters follow the same results and shared-failure boundaries under their existing storage contracts.
 
-Keep snapshot I/O outside the per-record decoding rescue boundary.
+Handle snapshot file errors separately from record-decoding errors. Snapshot file errors stop the whole retry call.
 Rescue specified selected decoding failures only around `String#undump` and `Marshal.load`.
 Keep natural record assembly and entry-construction failures separate from operational I/O failures.
-Do not add a shared payload schema validator.
+Use the existing decoding and retry checks. Do not add a common validator that checks every decoded record's fields and types.
 
 Reuse small private entry helpers for class validation, argument decoding, and public enqueue when practical.
 Mark internal cross-object helpers `@private` and keep these helpers out of the supported public API.
-Do not add a retry service, entry collection reference, backend retry orchestrator, or public retry options.
+Do not add an entry collection reference or public retry options.
+The earlier bans on a retry service and backend retry orchestrator remain pending the scoped ownership decision in Q-07; they do not authorize putting coordination back into the collection or introducing either alternative without the user's decision.
 Keep `DeadTask#retry` responsible for its existing individual sequence and error behavior, wrapped in the same retry coordination lock.
 
 For Disk, the proposed lock mechanism opens the same stable retry-lock file separately per invocation, obtaining distinct open file descriptions rather than `dup` or a shared descriptor.
@@ -167,20 +174,19 @@ Do not unlink or replace the lock file while holders or contenders can exist.
 The separate lock, retry-before-dead-store order, `flock`, and no-mutex choices are accepted; descriptor/wait details remain a proposed mechanism subject to Q-05.
 Long or yielding middleware delays other retries for the same store. A nested retry waiting on a distinct descriptor while its caller holds the lock can deadlock without an explicit policy.
 
-Private write observation is a candidate, not destination routing. Additional tasks enqueued by middleware keep their ordinary queue/WAL behavior.
-The queue privately receives a fresh pending ID before scheduling, while public enqueue returns `nil`. A private observation point could correlate this write with a source DLQ ID without rewriting public enqueue.
-Neither arbitrary WAL activity, class/argument equality, shared counters, nor writes from another Fiber prove that the requested replay was written.
-Disk currently does not check the full `File#write` byte count; backend return alone proves neither complete framing nor durable persistence. A write can precede a backend, scheduling, middleware, or telemetry exception.
-Exact source/pending correlation, complete-write acknowledgement, durability across active-WAL changes, multiple yields, unrelated nested enqueues, zero writes, and failure reporting need a decision before changing eligibility.
-REQ-30's prohibition on acceptance bookkeeping remains in force; no observer API or removal-after-error policy is approved.
+Q-04 is resolved: retain the original DLQ source after any public enqueue exception, even when a pending write happened first. Do not add private write acknowledgement, pending/source receipts, or write-candidate tracking.
+Public enqueue still returns `nil`; no per-write persistence proof is required to decide which failed calls retain their source.
+Additional tasks enqueued by middleware keep their ordinary queue/WAL behavior. Normal-return eligibility and the silent-suppression limitation remain unchanged.
+The retained source and a pending copy can coexist. This simpler error path accepts duplicates after recovery or an operator retry; it does not add automatic replacement work or scheduling recovery.
+REQ-30's prohibition on acceptance bookkeeping remains in force.
 
 The remaining decisions are:
 
-- Q-04: May an exact source ID be removed after its replay produces acknowledged pending work but public enqueue later raises? Define private correlation, complete-write/durability acknowledgement, multiple writes, unrelated middleware enqueues, Fiber isolation, and any prerequisite WAL work. Decides: the user. Recommendation: require exact source mapping and acknowledged durable writes before considering removal; retain the original error/source fallback until a scoped REQ-30 extension is approved.
 - Q-05: Define timeout/error, cancellation, same-store backend-instance handling, nested retry, and ordering with additional locks, given the accepted retry-before-dead-store order. Decides: the user. Recommendation: choose a policy that cannot deadlock Fibers; both retry surfaces retain the existing WAL.
-- Q-06: If Q-04 permits removal after an acknowledged write and a later enqueue error, what per-ID result and warning report that outcome? Resolve zero-eligible/suppression cases, warning timing/counts, and restart guidance together. Decides: the user. Recommendation: preserve the original exception and distinguish persistence/removal from execution; until decided, retain the existing result/warning rules above.
+- Q-06: What concise operator guidance should explain possible pending copies and recovery/restart needs after an enqueue error? Decides: the user. Recommendation: keep the existing per-ID Hash/original exception and warning timing/count rules; any additional guidance must avoid payloads and must not imply that failure means no pending work. This question changes neither source eligibility nor the agreed retain-on-error behavior.
+- Q-07: Which internal owner runs the complete selection/enqueue/flush/removal lifecycle while keeping `DeadTasks` unaware of locking, and what scoped changes to the earlier orchestration/service prohibitions are needed? Decides: the user. Recommendation: consider a semantic backend retry operation with a replay callback before introducing a separate collaborator; neither an owner nor a private interface is selected. Preserve the accepted lock scope and all existing behavioral contracts.
 
-Q-04 through Q-06 keep this task in draft. WAL publication/durability protocol and orphan adoption need separately specified future work; this task adds neither that protocol nor a new dependency.
+Q-05 through Q-07 keep this task in draft. WAL publication/durability protocol and orphan adoption need separately specified future work; this task adds neither that protocol nor a new dependency.
 
 For a nonempty invocation, Disk performs one selection scan regardless of the requested ID count.
 Disk also performs at most one explicit flush and one compaction when the invocation has eligible IDs.
@@ -191,7 +197,7 @@ For `M` distinct requested IDs, normalized IDs, result entries, selected records
 Payload bytes require memory proportional to the combined selected payload size, excluding application-retained objects.
 Disk also uses bounded record-scan buffers.
 Callers can split IDs into separate invocations to limit memory and the number of pending copies before removal.
-Each separate invocation acquires the retry lock and performs its own selection scan, optional `flush_tasks`, and bulk removal. Any later approved observation state must remain invocation-local and bounded by related writes.
+Each separate invocation acquires the retry lock and performs its own selection scan, optional `flush_tasks`, and bulk removal. Invocation state remains local to the call; add no write-candidate tracking.
 
 Scanning and compaction run in the calling Fiber under existing filesystem behavior.
 The API does not bound request size, scan time, record size, middleware execution time, or total retry-lock hold time.
@@ -204,7 +210,7 @@ Use Fiber-aware waiting and `ensure` cleanup without masking an exception alread
 - Do not implement a transaction, journal, reservation, cancellation protocol, or exactly-once guarantee.
 - Do not call `entry.retry` in a collection loop; this preserves the repeated-scan and repeated-compaction cost.
 - Do not add per-ID fresh lookups after batch selection.
-- Do not remove failed IDs to compensate for shared failures.
+- Do not remove sources after per-ID enqueue failures or to compensate for shared failures. A pending write before the error does not change this rule.
 - Do not rewrite public enqueue or add a dedicated retry WAL, enqueue destination routing, adoption, or a scheduling barrier. Preserve ordinary enqueue persistence, storage format, timer policy, unused-feature isolation, and task 07's scope.
 - Do not change task 05's individual return values, warning, exception behavior, or snapshot replay semantics.
 - Keep backend access private and preserve the identical backend shared with the queue.
@@ -227,6 +233,8 @@ Use Fiber-aware waiting and `ensure` cleanup without masking an exception alread
 - [ ] TC-13 (AC-15) Individual and batch retry exclude cooperative callers across processes and Fibers through the separate retry-lock file, acquired before the short dead-store lock, without mutexes.
 - [ ] TC-14 (AC-15) Every exit releases descriptors, coordination, and invocation state without masking the primary failure.
 
+- [ ] TC-15 (AC-15) `DeadTasks` has no lock operations, lock/coordination-scope API calls, or coordination-scope blocks; the agreed internal lifecycle owner preserves invocation-spanning retry exclusion.
+
 ## Verification
 
 - Derive RSpec coverage independently from these requirements when the user requests the Test Engineer stage.
@@ -244,7 +252,9 @@ Use Fiber-aware waiting and `ensure` cleanup without masking an exception alread
 - Interleave delete and same-ID replacement after selection. Verify recorded replay input and exact-ID removal behavior.
 - Exercise nested and Fiber-interleaved calls under the agreed Q-05 policy. Verify isolated invocation state, retry-lock exclusion, and no dead-store lock across application code.
 - Cover same-store separate backend instances, independent stores, process contention, yielding middleware, timeout/cancellation, stable lock-file identity, and descriptor/lock cleanup.
-- If Q-04 is approved, cover exact source/pending correlation, unrelated middleware enqueues, multiple yields, other Fibers, full/short writes, errors after writes, and the agreed acknowledgement/result/warning boundary. Until then verify original-error results and source preservation.
+- Verify the Q-07 architecture keeps lock operations and coordination scopes out of `DeadTasks`, while retaining full-invocation exclusion, backend neutrality, and existing behavior. No internal owner/interface is approved by this verification requirement.
+- Fail enqueue before a write, after a write, and during scheduling/middleware/telemetry. Verify original per-ID errors, retained failed sources, continued later IDs, and no private acknowledgement or automatic replacement enqueue. When every enqueue raises, verify no explicit flush or removal despite possible pending copies.
+- Verify YARD/operator guidance explains that failure can coexist with pending work and that recovery or a later operator retry can duplicate it.
 - Verify both retry surfaces use the existing pending WAL and ordinary scheduling, without dedicated retry files or destination routing. Preserve telemetry's inability to suppress enqueue.
 - Verify warning counts, suppression warnings, no-warning failures, Iodine scheduling behavior, and no new payload output.
 - Update the existing no-collection-retry assertion to cover the new collection API. Preserve existing entry behavior checks.

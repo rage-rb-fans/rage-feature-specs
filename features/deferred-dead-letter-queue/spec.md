@@ -91,7 +91,7 @@ The collection and final active-entry shape, including the mutation-safe snapsho
 ### Retry and deletion
 
 REQ-12 through REQ-16 describe task 05's stage. Task 08 adds the separate retry coordination lock in REQ-35 and ADR-004 around both retry surfaces while retaining normal public enqueue, existing pending WALs, scheduling, and entry replay/results/errors.
-The no-lock-across-application-code restriction remains for the dead-store lock. Candidate write observation/removal after enqueue errors is not approved; the existing source-preservation/error contract and REQ-30 remain in force pending task-08 decisions.
+The no-lock-across-application-code restriction remains for the dead-store lock. Q-04 is resolved: any enqueue exception retains the original DLQ source and original per-ID error, even after a pending write. Add no private acknowledgement or receipts; REQ-30 remains in force.
 
 - REQ-11: `DeadTask#delete` and `DeadTasks#delete(id_or_ids)` permanently remove records. The entry method calls `@backend.remove_dead_tasks(@id) == 1` directly. It performs no lookup, class resolution, or argument decoding.
 
@@ -108,7 +108,7 @@ The no-lock-across-application-code restriction remains for the dead-store lock.
   For individual retry, callers use `find_by_id(id)` and call `entry.retry` when lookup returns an entry.
   Callers return `false` when lookup returns `nil`.
   The entry owns the individual retry implementation.
-  Task 08 adds separate collection orchestration.
+  Task 08 adds collection retry; ownership of its full internal lifecycle is pending Q-07 because the collection must remain unaware of locking.
 
   Repeated entry retry performs a fresh enqueue and an individual dead-store removal for every task.
   This work can approach quadratic storage cost under task 01's rewrite algorithm.
@@ -237,6 +237,7 @@ Task 05 retains its stage-specific individual retry contract; task 08 adds share
   Both individual and batch retry acquire one separate stable retry-lock file per DLQ store, scoped by backend path/prefix, using `flock` without mutexes. Acquire it before source selection and before any short dead-store lock; retain it through middleware, optional explicit `flush_tasks`, and source removal.
   The retry lock excludes cooperative processes and Fibers; the dead-store lock remains short-lived and never spans application code. Normal enqueue, execution, failure recording, inspection, and independent deletion do not acquire the retry lock. Independent stores use independent locks.
   Both retry surfaces use existing pending WALs and normal scheduling, without a dedicated retry WAL, destination routing, or scheduling barrier. Keep invocation state local and release resources through `ensure` without masking the primary failure.
+  The collection exposes the API/input/result contract without lock operations, lock/coordination-scope API calls, or coordination-scope blocks. Task-08 Q-07 must select the internal invocation-spanning lifecycle owner; earlier collection-ownership and service/backend-orchestrator prohibitions remain pending that scoped decision, without approving a replacement interface.
   Outside Iodine, each eligible invocation warns once after enqueue and optional flush, before removal.
   The warning states the restart requirement without payloads or exception text.
   Nil returns `false` for each requested ID without persistence or scheduling.
@@ -244,8 +245,8 @@ Task 05 retains its stage-specific individual retry contract; task 08 adds share
   Selected records and result entries require O(requested IDs) slots plus selected payload bytes.
   A crash before removal can leave pending copies across the complete invocation.
   Callers can split requested IDs into separate invocations.
-  A later cooperative retry cannot select successfully removed sources; deletion/replacement races and crash/uncertainty duplicates remain. Task-08 Q-04 through Q-06 retain candidate observation/removal-after-error, nested/timeout/cancellation, and result/warning questions; current eligibility, errors, and warnings remain the fallback.
-- REQ-36: Batch retry has YARD, a changelog entry, and operator guidance for results, shared failures, storage cost, races, and restart requirements.
+  A later cooperative retry cannot select successfully removed sources; deletion/replacement races and crash/uncertainty duplicates remain. Eligibility requires a normal public enqueue return; any enqueue error retains its source and original error. If none return normally, perform no explicit flush/removal. Q-04 is resolved; Q-05 through Q-07 retain locking, concise recovery guidance, and internal lifecycle ownership questions.
+- REQ-36: Batch retry has YARD, a changelog entry, and operator guidance for results, shared failures, storage cost, races, and restart requirements. Explain that an enqueue error retains the source but does not prove no pending copy exists; after scheduling failure, pending work may await startup/recovery and a later operator retry can duplicate it. No automatic replacement enqueue or pending-to-DLQ transfer is added.
   Verification covers invocation-based scan, explicit-flush, and compaction counts without a fixed elapsed-time guarantee.
   Individual entry retry gains the shared lock; its other behavior and existing lookup, inspection, deletion, Enumerable, and Rake contracts remain compatible.
 
@@ -253,7 +254,7 @@ Task 05 retains its stage-specific individual retry contract; task 08 adds share
 
 - Periodically discovering or adopting WAL files created by consoles, Rake processes, or unrelated processes.
 - Exactly-once replay or an atomic transaction spanning the pending WAL and dead-tasks file.
-- Enqueue-acceptance detection or dead-record retention after silent middleware suppression.
+- Enqueue-acceptance detection, private write acknowledgement/receipts, or dead-record retention after silent middleware suppression.
 - Automatic retention, pruning, quotas, archival, or dead-task metrics.
 - A web dashboard, HTTP/JSON management endpoint, authentication system, or remote administration protocol.
 - Searching, filtering, or sorting by arbitrary record fields beyond oldest-first enumeration and exact-ID lookup.
@@ -327,7 +328,7 @@ Task 05 retains its stage-specific individual retry contract; task 08 adds share
   The collection performs no repeated per-ID existence scans.
   Timer synchronization does not replace the explicit removal barrier.
 - [ ] AC-15: Batch shared failures, selection races, suppression, Fiber isolation, and Iodine warnings follow task 08.
-  Coverage and documentation state partial outcomes, missing result Hashes after shared failures, inherited persistence limits, shared retry-lock exclusion across processes/Fibers, and cleanup. The dead-store lock stays short-lived; task-08 candidate eligibility/reporting changes remain unresolved.
+  Coverage and documentation state partial outcomes, missing result Hashes after shared failures, inherited persistence limits, shared retry-lock exclusion across processes/Fibers, and cleanup. The dead-store lock stays short-lived. An enqueue error can leave both a retained DLQ source and pending work; verify original errors/source preservation, no explicit flush when all enqueues raise, and documentation of recovery/retry duplicate risk. Q-05 through Q-07 remain open.
 
 ## Tasks
 
@@ -352,7 +353,8 @@ The separate stable retry-lock file uses `flock`, without mutexes, before the sh
 Successful locked removal excludes later cooperative replay of those sources. Crashes after pending persistence/publication and before removal, uncertain persistence, or failed removal can still cause duplicates. The user accepts that window without transactional source reconciliation or a source transfer journal.
 Stronger WAL publication/durability and orphan adoption require separate future specifications; this task assumes no new protocol or prerequisite. Safe ownership, at-least-once recovery, and durable adoption cleanup must be defined there.
 Task 07 retains its scope.
-Task 08 remains `draft`: exact private write observation/removal after enqueue errors, nested locking, and collection results/warnings remain open under Q-04 through Q-06. Existing source-preservation/error and warning rules apply until the user decides; REQ-30 and middleware-suppression limitations remain unchanged.
+Task-08 Q-04 is resolved by retaining the original source and original error after any enqueue exception, including a write followed by scheduling failure. This supersedes the earlier durable-write-after-error removal policy; no private acknowledgement, receipts or write-candidate machinery is added. Pending work can coexist with the retained source and wait for startup/recovery, so an operator retry can duplicate it. No automatic replacement enqueue or pending-to-DLQ transfer is added.
+Task 08 remains `draft` with Q-05 through Q-07 open, including the internal lifecycle owner that keeps the collection unaware of locking. Existing warning rules, REQ-30 and middleware-suppression limitations remain unchanged.
 This direction adds no cross-store transaction, exactly-once guarantee, implementation authorization, or publication approval.
 
 ## Decisions

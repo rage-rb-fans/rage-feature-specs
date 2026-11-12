@@ -40,7 +40,9 @@ The user considers that work excessive for the current operator API.
 
 Use Option B for task 08. The user approved this decision on 2026-10-18.
 [ADR-004](004-retry-batch-wal-adoption.md) now adds a separate retry lock spanning selection, public enqueue, optional `flush_tasks`, and source removal for both retry surfaces.
-Task 08 remains `draft` with candidate write-observation/removal-after-error, nesting, and result/warning decisions open. Its current per-ID error/source-preservation and warning rules remain the fallback; this amendment approves no observer API or changed removal eligibility.
+Task-08 Q-04 is resolved: only normal public enqueue returns qualify for the final optional flush and source removal. Every enqueue exception retains the original DLQ source and original per-ID error, even if pending work was written first; later IDs continue. An invocation with no normal enqueue returns performs no explicit flush or removal.
+This simpler policy supersedes the earlier durable-write-after-error removal decision. Add no private write acknowledgement, receipts, or write-candidate tracking. A failed scheduling call can leave pending work awaiting startup/recovery, currently usually restart; retaining its DLQ source lets an operator retry but accepts duplicate work. No automatic replacement enqueue or pending-to-DLQ transfer is added.
+Task 08 remains `draft` with Q-05 through Q-07 open for locking, concise recovery guidance, and the internal lifecycle owner.
 
 Add `DeadTasks#retry(id_or_ids)` with the same input forms as collection deletion.
 Process all distinct requested IDs as one batch per invocation.
@@ -51,10 +53,10 @@ Removal failure raises the existing `DeadTaskRetryError` with its cause.
 A raised call returns no Hash. Pending work can already exist.
 Task 08 defines the approved result and shared-failure contract.
 
-The collection owns batch orchestration.
-Entries can share small private replay helpers without transferring individual retry ownership.
-Backends provide multi-ID lookup, optional flush, and bulk removal.
-Backends do not run middleware or own retry orchestration.
+The collection exposes the public API, input-validation, and result contract without knowing about locking or calling lock/coordination-scope APIs.
+The earlier collection-owned orchestration and prohibition on backend-owned retry orchestration are pending task-08 Q-07: a complete invocation-spanning lifecycle owner below the collection boundary is not yet selected.
+No retry service, backend orchestration interface, or replay callback is approved by this constraint amendment. Existing behavior and lock scope remain required.
+Entries can share small private replay helpers without transferring individual retry ownership. Backends retain their multi-ID lookup, optional flush, and bulk-removal capabilities.
 
 This extension replaces only the earlier prohibition on collection retry and the requirement for one sole retry workflow.
 The extension also replaces the parent's bulk-retry non-goal.
