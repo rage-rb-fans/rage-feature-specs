@@ -43,9 +43,15 @@ The user accepts the non-transactional persistence-to-removal window and keeps f
 Accept the revised Option B for task 08. The separate retry lock is included in this task; the earlier dedicated-WAL, destination-routing, and adoption-before-execution direction is superseded.
 Both retry surfaces use existing pending WALs and normal scheduling through unchanged public enqueue. Future WAL publication/durability and orphan-adoption protocols remain separately specified work.
 The collection must not know about locking, call a lock/coordination-scope API, or manage a coordination block.
-The internal owner of the full invocation-spanning lifecycle is open under task-08 Q-07. Earlier collection-orchestration ownership and service/backend-orchestrator prohibitions need a scoped decision; no replacement owner or private interface is approved here.
+Q-07 selects an internal `Rage::Deferred::DeadTaskActions` collaborator for both individual and collection mutation actions. A factory selects backend-specific subclasses such as `DeadTaskActions::Disk` and `DeadTaskActions::Nil` using the identical existing backend. Public objects keep input validation, frozen inspection data, and read behavior, and delegate mutation workflows without lock or persistence-capability branches or an entry-to-collection reference.
+The shallow parent shares genuinely common behavior: `delete_one(id)` calls `backend.remove_dead_tasks(id) == 1`; `delete_many(ids)` returns `0` for empty input or delegates one bulk removal. Public deletion validation and de-duplication remain unchanged. Deletion uses only the short dead-store lock and never joins the retry lock.
+Backend-specific actions own separate `retry_one(entry)` and `retry_many(ids)` workflows. Individual retry checks existence but replays the original entry snapshot, preserving Boolean results, propagated errors, warning timing, and frozen inspection caches. Batch retry uses fresh multi-ID selection, per-ID errors, and shared-failure boundaries. Do not replace individual retry with a one-ID batch.
+Disk actions request the invocation-spanning retry-lock scope from a Disk-specific helper, call Disk lookup/removal primitives, and call `flush_tasks` directly. Disk owns filesystem operations and cleanup, not application replay or result orchestration. Nil actions return individual `false` or an ordered all-`false` batch Hash with no enqueue, files, lock, flush, or background work. Do not impose a generic lock API or no-op lock/flush on every backend, or use `respond_to?(:flush_tasks)` in public objects or a shared retry workflow.
+Actions retain only the backend; entry arguments, selected records, result/error Hashes, descriptors, and eligible-ID buffers remain invocation-local. Small internal entry helpers may provide class validation, mutable context decoding, and public enqueue without changing public inspection.
+This scoped amendment supersedes collection-owned orchestration, the ban on a separate actions/service collaborator and entry-held actions, and the requirement that `DeadTask#retry` itself own the complete individual sequence. Backend-owned replay orchestration remains unnecessary: actions own the workflow and backend helpers own storage. Task 05 retains its historical implementation requirements and status; task 08 preserves public behavior while changing ownership.
+The factory covers currently supported Disk and Nil configurations. Future adapters use corresponding actions subclasses, with the factory extension mechanism deferred; this adds no public registration API or new unsupported-backend error. Suggested internal files are `lib/rage/deferred/dead_task_actions.rb` and `lib/rage/deferred/dead_task_actions/{disk,nil}.rb` as detailed in task 08.
 The user supersedes the earlier durable-write-after-error removal decision with Q-04's simpler retain-on-error policy: only normal public enqueue returns feed the final optional flush and bulk removal. Any enqueue exception retains its source and original per-ID error, including after a pending write or during scheduling; later IDs continue.
-Add no private acknowledgement, receipts, or write-candidate tracking. No normal returns means no explicit flush/removal; failed flush remains a shared failure that removes no requested source. Q-05 through Q-07 remain open, and readiness/implementation are not authorized.
+Add no private acknowledgement, receipts, or write-candidate tracking. No normal returns means no explicit flush/removal; failed flush remains a shared failure that removes no requested source. Q-04 through Q-07 are resolved; task 08 remains `draft`, and readiness/publication/implementation are not authorized.
 
 The intended batch writer sequence is:
 
@@ -70,10 +76,15 @@ Normal enqueue, task execution, failure recording, and inspection do not acquire
 Explicit deletion keeps its existing dead-store lock and does not cancel replay that a retry already selected.
 
 The lock needs process exclusion and same-process Fiber exclusion without blocking the Iodine worker on contention.
-The proposed mechanism opens the same stable retry-lock file separately per invocation, obtaining distinct open file descriptions rather than `dup` or a shared descriptor, and uses `File::LOCK_EX | File::LOCK_NB` with Fiber-aware waiting.
+The accepted mechanism opens the same stable retry-lock file separately per individual or batch invocation, obtaining distinct open file descriptions rather than `dup` or a shared descriptor, and uses `File::LOCK_EX | File::LOCK_NB` with Fiber-aware waiting.
 Keep each descriptor through the locked sequence and release/close it through `ensure`. Do not unlink or replace the lock file while holders or contenders can exist.
-The separate lock, retry-before-dead-store order, `flock`, and no-mutex choices are accepted; descriptor/wait details remain a proposed mechanism.
-Timeout, cancellation, same-store backend instances, and nested retry need an explicit policy; a nested caller can deadlock while its parent holds the lock.
+Separate backend instances using the same configured path and prefix contend on the same stable lock file. Rake and application API callers use this same mechanism. No shared `@locked` flag, mutex, or backend-instance registry is needed for retry coordination. This adds no public multi-store API.
+
+Q-05 uses a fixed 30-second retry-lock acquisition deadline. On expiry, raise the existing `Rage::Deferred::DeadTasksLockTimeout` with a message identifying the retry coordination lock, before selection or enqueue by that invocation. Add no timeout configuration or new exception class. This deadline does not limit execution after acquisition or the total invocation duration, and it does not change the short dead-store lock's existing policy.
+Nested retry and other cyclic retry-lock waits use that same timeout. Add no Fiber-local nesting detection, special nested-retry error, reentrancy, or general cross-store ordering machinery. If a nested timeout escapes middleware, its caller uses the existing enqueue-error handling. The retry-before-dead-store order remains required.
+Rage does not coordinate application-owned locks or promise deadlock-free application code. Callers remain responsible for application-lock cycles; this timeout bounds each retry-lock acquisition wait only. In Iodine, waits yield the Fiber; outside Iodine, ordinary waiting may pause the process.
+
+An interruption that unwinds the invocation releases locks and descriptors and propagates the primary exception. Cleanup performs no extra WAL flush, rollback, or source removal, and adds no manual cancellation API. Ordinary per-ID `StandardError` handling remains unchanged. Preserve timer flushing and the usual final explicit flush when execution reaches it. Pending writes and removals already performed cannot be undone; interruption during removal can leave some sources removed. Cleanup does not mask an exception already in flight; a sole cleanup failure propagates.
 
 After successful source removal, a later cooperative retry cannot select those removed records.
 The lock therefore prevents normal concurrent replay of the same source when the locked operation completes successfully.
@@ -88,7 +99,8 @@ Those storage requirements do not imply exactly-once source transfer or executio
 
 In-process retry keeps normal scheduling; additional tasks enqueued by middleware keep their ordinary queue/WAL destination.
 An enqueue exception does not prove that no pending copy exists. After a scheduling failure, that copy may wait for startup/recovery, currently usually restart. The retained DLQ source allows an operator retry, accepting that recovery or a later retry can duplicate work.
-Document this tradeoff in YARD and operator guidance. Do not automatically enqueue another copy or move pending work back into the DLQ because scheduling failed; scheduling recovery is separate work.
+Q-06 records this concise YARD/operator guidance: "An enqueue error leaves the original dead task available for retry. A pending copy may already exist, even though enqueue raised. If scheduling failed, that copy may require server restart to recover. Retrying the dead task can create duplicate work."
+Keep the original per-ID exception and existing warning timing and count rules. Add no runtime warning for each enqueue error. Do not automatically enqueue another copy or move pending work back into the DLQ because scheduling failed; scheduling recovery is separate work.
 REQ-30 retains its prohibition on acknowledgement/acceptance bookkeeping and public enqueue changes. Silent-suppression compatibility remains unchanged.
 Current orphan recovery does not provide this coordinated protocol.
 The orchestrator cannot append to or replace a worker-owned WAL without an agreed ownership handoff.
@@ -100,10 +112,13 @@ The orchestrator cannot append to or replace a worker-owned WAL without an agree
 - This direction does not establish an atomic transaction across pending WALs and dead storage.
 - Future adoption needs its own ownership, durability, discovery, and cleanup protocol; retry adds no orchestrator prerequisite or scheduling barrier.
 - Long middleware calls can hold the retry coordination lock and delay other retry requests for the same DLQ store.
+- A contender, including an accidental nested retry, fails after 30 seconds of retry-lock acquisition waiting. Middleware and application locks can still delay the outer invocation; the timeout is not a total duration or general deadlock guarantee.
+- Interruption cleanup releases resources without forcing additional persistence or removal. Pending copies and partial source removal remain possible.
 - Pending WALs remain trusted local application data. Future publication/adoption work needs compatible framing, retention, and cleanup rules.
 - Silent enqueue suppression retains the existing task-loss risk. This direction does not promise unconditional at-least-once delivery.
 - This direction does not guarantee exactly-once task execution or exactly-once external effects.
 - Task 08 needs lock/Fiber/failure coverage and operator guidance. Separate future WAL/adoption work needs its own protocol and verification before implementation.
+- Public entries and collections share mutation action contracts while backend-specific actions keep Disk coordination and persistence out of public objects. Actions add no progress state or work to normal enqueue/execution paths.
 
 ## Open questions
 
@@ -114,7 +129,3 @@ The orchestrator cannot append to or replace a worker-owned WAL without an agree
 - Q-03: Define ordinary at-least-once pending-WAL recovery for interrupted publication and merge.
   Define when adoption can safely remove published source files after durable worker persistence.
   Decides: the user during future task drafting.
-- Q-05: Define timeout/error, cancellation, same-store backend-instance handling, nested retry, and ordering with additional locks without Fiber deadlock. The retry lock precedes the short dead-store lock; deletion remains independent.
-  Decides: the user during task 08 drafting.
-
-- Q-07: Select an internal full-invocation lifecycle owner below the collection boundary, with any scoped amendment to the earlier orchestration/service prohibitions. The collection must remain unaware of locking; accepted lock scope and behavior remain unchanged. Decides: the user during task 08 drafting.
