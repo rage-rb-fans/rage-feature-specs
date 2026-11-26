@@ -48,7 +48,7 @@ This task depends on task 02 and owns REQ-08; REQ-09's exception-detail readers;
 - Never use `eval` and never expose opaque Marshal bytes. Detailed argument data can contain credentials or personal data.
 - Add YARD documentation for public readers, lookup return values, and the context-deserialization error.
 - Keep decoding and entry-construction helpers private with YARD `@private`.
-- Task 06 owns complete operator documentation for trusted Marshal data and sensitive output.
+- Task 06 owns complete operator documentation for trusted Marshal data and sensitive output. (Task 06 was rejected on 2026-11-26. These operator docs are dropped.)
 - Keep this task's additions passive. Exact lookup and detailed readers must not add or require a collection reference, raw backend, operation delegate, or another mutation dependency. If task 04 has already introduced private action wiring, preserve it unchanged rather than replacing it with inspection-specific construction.
 - Preserve the backend abstraction: Nil lookup returns `nil`, performs no decoding, and creates no files; adding another conforming adapter must not require changes to `DeadTasks#find_by_id`.
 

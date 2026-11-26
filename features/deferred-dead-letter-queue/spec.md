@@ -6,7 +6,7 @@ title: Dead letter queue for deferred tasks
 
 ## Motivation
 
-Deferred tasks already have an at-least-once pending-task WAL, but operators also need a durable and supported way to investigate and recover work that Rage has stopped retrying. The dead-tasks feature records the final failure, exposes it through Ruby and command-line operator interfaces, and lets an operator retry or permanently delete the work.
+Deferred tasks already have an at-least-once pending-task WAL, but operators also need a durable and supported way to investigate and recover work that Rage has stopped retrying. The dead-tasks feature records the final failure, exposes it through a Ruby operator interface, and lets an operator retry or permanently delete the work.
 
 Durable storage and the pending-to-dead handoff are already implemented by task 01. The remaining work turns that storage into a public operator feature without adding overhead to successful deferred-task execution.
 
@@ -16,7 +16,7 @@ Durable storage and the pending-to-dead handoff are already implemented by task 
 
 - REQ-01: A deferred task becomes a dead task when its retry budget is exhausted or when `retry_interval` returns `false` or `nil`. A task that succeeds or still has a retry interval never enters the dead-tasks store.
 - REQ-02: With the disk backend, Rage durably adds the dead-task record before removing the pending WAL record. A failed dead-task write leaves the pending record recoverable. A crash between those writes may leave the same logical task in both stores; the dead-tasks store selects the newest frame-valid record for a duplicated authoritative outer task ID. A newer frame-valid record hides every older record with that outer ID even if its selected Marshal payload later cannot be decoded or used as a dead-task record.
-- REQ-03: Dead tasks have no automatic retention period, maximum age, or drop-oldest policy. They remain until an operator retries or deletes them. Documentation must warn that this makes disk use unbounded when the store is not maintained.
+- REQ-03: Dead tasks have no automatic retention period, maximum age, or drop-oldest policy. They remain until an operator retries or deletes them.
 - REQ-04: With `config.deferred.backend = nil`, failures remain non-persistent. The public collection is empty, lookup returns `nil`, and mutation of a missing ID reports that no record was changed; Rage does not create dead-task files.
 
 Task 01 defines the canonical disk format and crash guarantees. Its version remains in the filename (`{prefix}dead_tasks-{STORAGE_VERSION}`), not in each record, and its permanent lock file coordinates workers and processes.
@@ -130,8 +130,6 @@ The collection and final active-entry shape, including the mutation-safe snapsho
 
   Public enqueue and backend `add_task` signatures remain unchanged. This design adds no backend retry orchestrator, application callback block, retry flag, or shared synchronization parameter.
 - REQ-15: Concurrent retry/delete operations are serialized only for their individual storage calls. Two operators racing to retry the same snapshot can enqueue duplicate work, and a delete racing with a retry does not cancel work already enqueued. The existence check does not reserve the record or compare versions. If the same ID has a replacement record, retry uses the entry's original class and arguments. Later exact-ID removal can delete that replacement.
-
-  Operator documentation must require coordination for mutation commands. Document per-task enqueue calls, repeated dead-store compactions, possible duplicates, and the suppression limitation.
 - REQ-16: `Queue#schedule` is a no-op unless `Iodine.running?`. When enqueue reaches the queue outside Iodine, retry persists a new pending WAL record without executing it. Rake, IRB, and other processes without Iodine use this path. After enqueue and optional flush return normally, Rage warns that a server restart is required. Silent suppression also follows this warning path, even when no pending work exists. Periodic adoption of out-of-band/orphan WAL files is deferred and is not part of this feature.
 
 The fresh-enqueue and out-of-process behavior is described in [ADR-002](adr/002-dead-task-retry-lifecycle.md).
@@ -154,16 +152,8 @@ The fresh-enqueue and out-of-process behavior is described in [ADR-002](adr/002-
 
   Other selected top-level decoding failures propagate unchanged. Natural public-model construction failures also propagate. These failures do not trigger storage-level fallback. Disk compaction behavior remains as defined by task 01. Other adapters return the same public model. They need not emulate Disk framing or a shared schema-validation layer.
 - REQ-18: A valid record whose opaque context raises during Marshal deserialization or access through `Rage::Deferred::Context` remains listable through its metadata. Accessing `args` or `kwargs`, or retrying it, raises the dedicated context-deserialization error and does not delete it. The error boundary does not add the proactive context shape or extracted-value type validation deferred by REQ-10.
-- REQ-19: Dead-task records can contain credentials, personal data, logger context, exception messages, and application object graphs. The feature adds no HTTP endpoint and performs no network I/O. Ruby and Rake interfaces are for trusted operators; documentation must warn against copying output into logs or tickets without redaction. The REQ-17 decoding diagnostic writes the ID, exception class, and unsanitized exception message to standard output. Rage does not inspect the message for sensitive data.
-- REQ-20: Marshal payloads are trusted local application data, not an interchange format. Rage must not load a dead-task file from an untrusted source, and the Rake interface must never use `eval` or shell interpolation to resolve records or classes. Disk frame validation provides corruption detection for Rage's local storage framing; it does not make an untrusted Marshal payload safe to decode.
-
-### Rake/operator interface
-
-- REQ-21: Thin Rake tasks expose list, show, retry, and delete through the Ruby API. The proposed names are `deferred:dead_tasks:list`, `deferred:dead_tasks:show`, `deferred:dead_tasks:retry`, and `deferred:dead_tasks:delete`.
-- REQ-22: `list` prints bounded summaries oldest-first in the collection's order and omits arguments and backtraces. `show` requires one `ID` and prints the full inspectable record, including arguments and backtrace, with a sensitive-data warning. `retry` and `delete` accept comma-separated `IDS` and process each ID independently. Rake retry calls `find_by_id(id)` and then `entry.retry` when lookup returns an entry. Both print per-ID outcomes and totals, then exit non-zero after all failures are reported.
-
-  Retry totals use succeeded/not-retried/failed; delete totals use succeeded/missing/failed. Retry `false` reports not retried without distinguishing missing, stale, or rescued lookup failures. Retry `true` reports sequence completion without proving queue acceptance. Non-exception outcomes preserve the existing exit policy.
-- REQ-23: Rake tasks boot the application environment, contain no storage logic, and behave consistently for Disk and Nil backends. After enqueue and optional flush return normally, out-of-process retry output prominently states that server restart is required. Silent suppression does not prevent this warning.
+- REQ-19: Dead-task records can contain credentials, personal data, logger context, exception messages, and application object graphs. The feature adds no HTTP endpoint and performs no network I/O. The Ruby interface is for trusted operators. The REQ-17 decoding diagnostic writes the ID, exception class, and unsanitized exception message to standard output. Rage does not inspect the message for sensitive data.
+- REQ-20: Marshal payloads are trusted local application data, not an interchange format. Rage must not load a dead-task file from an untrusted source. Disk frame validation provides corruption detection for Rage's local storage framing; it does not make an untrusted Marshal payload safe to decode.
 
 ### Compatibility and performance
 
@@ -196,6 +186,8 @@ The fresh-enqueue and out-of-process behavior is described in [ADR-002](adr/002-
 
 REQ-32 through REQ-36 and AC-13 through AC-15 described collection retry for [task 08](tasks/08-batch-retry-dead-tasks.md).
 The maintainer rejected task 08 on 2026-11-26, because batch retry is not needed now.
+REQ-21 through REQ-23 and AC-09 described Rake commands for [task 06](tasks/06-rake-operations-and-documentation.md).
+The maintainer rejected task 06 on 2026-11-26, because Rake commands are not needed now.
 These numbers are not reused.
 
 ## Non-goals
@@ -208,6 +200,8 @@ These numbers are not reused.
 - Searching, filtering, or sorting by arbitrary record fields beyond oldest-first enumeration and exact-ID lookup.
 - Editing arguments, retry policy, delay, or scheduled time before replay.
 - An optimized bulk or large-set retry API.
+- Rake commands or another command-line interface for dead tasks.
+- Operator documentation beyond YARD.
 - Migrating or merging older dead-task storage versions, or proactively validating alternate opaque-context layouts inside the current version. A context-layout compatibility change requires a storage-version bump; a filename version change leaves older files untouched for an explicit future migration.
 - Supporting network filesystems whose lock, rename, or `fsync` semantics do not satisfy task 01.
 - Implementing a database or other new deferred backend.
@@ -234,7 +228,7 @@ These numbers are not reused.
 - [ ] AC-04: Each public entry exposes the documented metadata, exception details, and lazily decoded positional and keyword arguments without requiring the task class for basic inspection. Argument decoding uses frozen Marshal loading plus `Rage::Deferred::Context` accessors, nil normalization, successful-only caching, and the dedicated ID-and-cause error boundary, without duplicating the current storage version's context shape or extracted-value type rules.
 - [ ] AC-05: When enqueue reaches the queue, retry creates fresh work with reset attempts. The entry removes the dead record after public enqueue and optional flush return normally. Disk synchronizes active-WAL bytes and directory metadata under the existing storage lifecycle. Inherited WAL defects remain as specified by REQ-14.
 
-  Retry ignores the unchanged enqueue `nil` return. Silent suppression still permits flush, the applicable restart warning, removal, and `true` without pending work. Documentation states this accepted task-loss risk and defers detection. Independent mutable replay preserves frozen inspection data. A rescued selected lookup failure prints the REQ-17 diagnostic, returns `false`, and keeps the record stored.
+  Retry ignores the unchanged enqueue `nil` return. Silent suppression still permits flush, the applicable restart warning, removal, and `true` without pending work. Independent mutable replay preserves frozen inspection data. A rescued selected lookup failure prints the REQ-17 diagnostic, returns `false`, and keeps the record stored.
 
   Every other failure and partial-success case follows REQ-14.
 - [ ] AC-06: Delete accepts one String or one flat Array of Strings. It handles duplicate, missing, empty-Array, and concurrently stale IDs with the documented return values. It rejects zero arguments, multiple arguments, nested Arrays, and other non-String values without storage mutation. One non-empty collection-level call delegates to one Disk compaction.
@@ -244,10 +238,7 @@ These numbers are not reused.
 
   Other selected decoding failures propagate unchanged. Natural entry-construction failures also propagate unchanged. Operational lock and filesystem failures propagate unchanged. All selected failures leave the record stored.
 - [ ] AC-08: When enqueue reaches the queue outside Iodine, retry persists work without scheduling it. Retry warns after normal enqueue and optional flush, including suppression. Scheduling remains unchanged inside Iodine.
-- [ ] AC-09: Rake list, show, retry, and delete delegate to the Ruby API, report partial outcomes, protect list output from accidental payload disclosure, and return a failing process status when requested operations fail.
-- [ ] AC-10: Public APIs have YARD documentation. Operator documentation covers the lifecycle, oldest-first processing, shared backend identity, and traversal-lazy snapshot work. It explains newest-frame-valid selection, one-at-a-time attempts, and silent physical-corruption handling. It specifies exact rescued selected-payload behavior and the unsanitized standard-output diagnostic. It distinguishes other selected failures, opaque-context failures, and operational failures.
-
-  Operator documentation covers trusted local Marshal data, races, retention, filesystem assumptions, and sensitive data. It explains wrapper identity, traversal isolation, and standard Enumerator behavior. It describes forward selection, winner-index memory, decoded-record retention, and cleanup. It covers repeated-mutation cost, large-set bulk deletion, and the absence of bulk retry. The changelog identifies the new API and commands.
+- [ ] AC-10: Public APIs have YARD documentation.
 - [ ] AC-11: Targeted RSpec coverage exercises both wrapper and queue initialization orders. Both orders use one identical backend object. Coverage verifies direct collection use of that backend. Collection access and valid unadvanced enumeration perform no DLQ snapshot work. Coverage verifies argument-free public `each` and oldest-first `first(20)` behavior. It verifies extra winner attempts only for rescued selected failures.
 
   Coverage verifies complete forward frame-only selection without `Marshal.load`. It verifies that no reverse-record reader remains. It covers silent malformed-frame, invalid-CRC, and torn-tail skipping. It covers newest-frame-valid duplicate selection for enumeration and exact lookup. Selected winners decode only after selection.
@@ -264,11 +255,11 @@ These numbers are not reused.
 
   Coverage verifies unchanged enqueue `nil` returns for Disk and Nil. It verifies ignored return values, silent middleware suppression, continued removal, and the applicable restart warning. It covers exceptions before and after pending work exists. It verifies mutable replay aliases and cycles, normal splat behavior, stable frozen inspection caches, and live/recovered mutability.
 
-  Adapter conformance verifies ordinary acknowledged enqueue without flush and buffered enqueue with flush. Coverage verifies active-WAL/directory synchronization and unchanged timer dirty state. Inherited WAL repair coverage belongs only to deferred task 07. Coverage includes retry and delete failures, races, non-running Iodine behavior, Rake output, and Rake status. Argument replay remains Ruby 3.3 compatible.
+  Adapter conformance verifies ordinary acknowledged enqueue without flush and buffered enqueue with flush. Coverage verifies active-WAL/directory synchronization and unchanged timer dirty state. Inherited WAL repair coverage belongs only to deferred task 07. Coverage includes retry and delete failures, races, and non-running Iodine behavior. Argument replay remains Ruby 3.3 compatible.
 
 - [ ] AC-12: Deferred task 07 owns pending-WAL boundary repair under REQ-31. This criterion does not block task 05. Later complete appends recover after unfinished adopted or copied tails. Failure preserves complete prior records and required recovery sources. Bounded-memory repair preserves clean append performance and existing storage compatibility.
 
-AC-13 through AC-15 are retired. See [Retired requirement numbers](#retired-requirement-numbers).
+AC-09 and AC-13 through AC-15 are retired. See [Retired requirement numbers](#retired-requirement-numbers).
 
 ## Tasks
 
@@ -277,11 +268,11 @@ AC-13 through AC-15 are retired. See [Retired requirement numbers](#retired-requ
 - [x] [03 — Inspect a dead task](tasks/03-inspect-a-dead-task.md)
 - [x] [04 — Delete dead tasks](tasks/04-delete-dead-tasks.md)
 - [x] [05 — Retry dead tasks](tasks/05-retry-dead-tasks.md)
-- [ ] [06 — Add Rake operations and documentation](tasks/06-rake-operations-and-documentation.md)
+- [ ] [06 — Add Rake operations and documentation](tasks/06-rake-operations-and-documentation.md) (rejected on 2026-11-26; Rake commands are not needed now)
 - [ ] [07 — Preserve recoverable pending-WAL appends](tasks/07-recoverable-pending-wal-appends.md) (deferred; independent future work)
 - [ ] [08 — Retry multiple dead tasks by ID](tasks/08-batch-retry-dead-tasks.md) (rejected on 2026-11-26; batch retry is not needed now)
 
-Task 01 precedes tasks 02 and 07. Task 02 precedes tasks 03 and 04. Tasks 03 and 04 precede task 05. Deferred task 07 is independent future work after task 01; task 05 does not depend on it. Task 06 follows tasks 02 through 05. Task numbers do not define execution order.
+Task 01 precedes tasks 02 and 07. Task 02 precedes tasks 03 and 04. Tasks 03 and 04 precede task 05. Deferred task 07 is independent future work after task 01; task 05 does not depend on it. Task numbers do not define execution order.
 
 ## Decisions
 
@@ -289,10 +280,6 @@ Task 01 precedes tasks 02 and 07. Task 02 precedes tasks 03 and 04. Tasks 03 and
 - [ADR-002 — Dead-task retry lifecycle](adr/002-dead-task-retry-lifecycle.md) (accepted)
 - [ADR-003 — Batch dead-task retry without a transaction](adr/003-batch-dead-task-retry.md) (rejected)
 - [ADR-004 — Coordinated retry and pending-WAL adoption](adr/004-retry-batch-wal-adoption.md) (rejected)
-
-## Open questions for this draft
-
-- Q-02: Should Rake use `deferred:dead_tasks:*` and `ID`/`IDS` environment variables? The initial issue proposes the shorter `deferred:dlq:*` namespace. Decides: the user. Recommendation: use `dead_tasks` consistently with the Ruby API.
 
 ## References
 

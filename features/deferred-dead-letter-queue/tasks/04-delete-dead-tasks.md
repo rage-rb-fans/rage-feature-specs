@@ -96,6 +96,7 @@ Task 02's open descriptor continues reading its fixed view after deletion rename
 - Decided: review finding S1 rejected, with no docs and no follow-up task. S1: a long public `delete` holds the dead-task lock longer than about 1.5 s, so a worker's `add_dead_task` in `Queue#abandon_task` raises `DeadTasksLockTimeout`; the task stays pending and runs again after restart, and for an immediate task the WAL may stop rotating.
 - Decided: code-reading finding dropped for now, with no criterion. `DeadTask#inspect` shows `@__backend`, so `p entry` or an IRB echo prints the Disk backend, including the serialized arguments of pending delayed tasks.
 - Decided 2026-11-26: TC-08 is met by the YARD guidance on bulk deletion. Public YARD states the contract only, so the O(N²) repeated-compaction cost and the O(selected IDs) accumulator memory go to the operator docs of task 06.
+- Decided 2026-11-26: task 06 is rejected, so its operator docs are dropped. The details in the previous note are not documented anywhere.
 - Decided 2026-11-26: no spec for zero or two arguments to `DeadTasks#delete`. Ruby's method arity raises `ArgumentError`, so such a test cannot fail for a Rage bug. Descriptor cleanup during `each(&:delete)` stays covered by the task 02 traversal specs.
 
 ## Result

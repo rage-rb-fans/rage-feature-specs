@@ -167,7 +167,7 @@ For no-block and lazy iteration:
 - Keep storage and snapshot helpers private. Use YARD `@private` where Ruby visibility cannot express that boundary.
 - Add YARD documentation for the public accessor, collection, summary readers, and private backend listing capability.
 - Mark private helpers with YARD `@private` where Ruby visibility cannot express the boundary.
-- Task 06 owns complete operator documentation for traversal lifecycle, security, and performance.
+- Task 06 owns complete operator documentation for traversal lifecycle, security, and performance. (Task 06 was rejected on 2026-11-26. These operator docs are dropped.)
 - Preserve Ruby 3.3.0 compatibility and the existing `config.deferred.backend` contract.
 - Do not add polling or work to successful deferred-task execution.
 
