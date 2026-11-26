@@ -1,8 +1,10 @@
 ---
-status: draft
+status: rejected
 ---
 
 # Add Rake operations and documentation
+
+> Rejected on 2026-11-26. The Rage maintainer decided that Rake commands are not needed now. The Ruby API is enough for operators. The operator documentation in this task is dropped too. Do not implement this task.
 
 ## Goal
 

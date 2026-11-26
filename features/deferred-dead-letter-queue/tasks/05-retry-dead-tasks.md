@@ -46,7 +46,7 @@ This task depends on tasks 03 and 04. [Task 07](07-recoverable-pending-wal-appen
 - Detect retry outside a running Iodine process. After enqueue and optional flush return normally, emit one stderr warning. Emit this warning even after silent suppression. Identify only the dead-task ID and state that server restart is required. Do not print args, kwargs, context, or exception text. This warning differs from task 03's selected decoding diagnostic, which can occur before enqueue.
 - Do not implement orphan-WAL polling/adoption or contact a running worker. The out-of-process WAL remains unavailable to existing workers until restart, as accepted in issue #369.
 - Nil dead-task retry returns `false` without class resolution, context decoding, scheduling, files, or background work. Ordinary Nil enqueue retains its unconditional `nil` return.
-- Task 06's multi-ID Rake retry calls `find_by_id(id)` and then `entry.retry` independently for every requested ID. The command reports partial results. The command is not an atomic or optimized bulk-retry primitive.
+- Task 06's multi-ID Rake retry calls `find_by_id(id)` and then `entry.retry` independently for every requested ID. The command reports partial results. The command is not an atomic or optimized bulk-retry primitive. (Task 06 was rejected on 2026-11-26.)
 - Document the retry sequence result, suppression limitation, mutable replay, errors, partial success, concurrency, and restart requirements with YARD.
 - Update the changelog for retry. Document unchanged enqueue behavior and deferred acceptance detection. Include task 03's unsanitized selected-failure diagnostic and the resulting `false` return.
 
@@ -180,6 +180,7 @@ Place the non-running guard at the top of `Queue#schedule`, not only in the dead
 - Decided: review finding rejected: the restart warning uses `warn`, which `-W0` silences; the enabled RuboCop cop `Style/StderrPuts` asks for output that can be turned off.
 - Decided: review finding rejected: two Disk examples for `DeadTasksStorage#remove` failures stay; they prove task 04's requirement on filesystem errors during deletion.
 - Decided 2026-11-26: TC-07, TC-12, and TC-17 are met by the YARD contract. Public YARD states the contract only, so these details go to the operator docs of task 06: that acceptance detection is future work, that a pending task can run before the flush finishes, the possible O(N²) cost, and that there is no bulk retry.
+- Decided 2026-11-26: task 06 is rejected, so its operator docs are dropped. The details in the previous note are not documented anywhere.
 - Decided 2026-11-26: no separate spec for retry with a Nil entry. Nil never yields an entry, and `Nil#find_dead_task` returns `nil`, so retry takes the tested missing-record path.
 
 ## Result
