@@ -30,18 +30,6 @@ A deletion failure can leave both copies. Concurrent operators can enqueue dupli
 
 Workers periodically discover WALs created by Rake or console processes. This improves immediacy but introduces a separate scheduler/storage ownership feature that the issue discussion explicitly deferred.
 
-
-## Approved batch extension
-
-[ADR-003](003-batch-dead-task-retry.md) defines collection retry for [task 08](../tasks/08-batch-retry-dead-tasks.md).
-The entry-only statements below describe the task-05 stage.
-ADR-003 extends retry ownership and bulk scope while preserving individual entry behavior and the other decisions below.
-Task 08 uses one batch per invocation, without an internal batch-size limit.
-Task 08 remains `draft` after resolving Q-04 through Q-07. [ADR-004](004-retry-batch-wal-adoption.md) records the retry-lock policy, operator guidance, and backend-specific `DeadTaskActions` design. Recording these decisions does not authorize readiness, publication, or implementation.
-For task 08, public entry and collection mutations delegate to backend-specific actions using the identical existing backend. This supersedes entry-owned retry implementation, the ban on an actions/service collaborator, and public-object `respond_to?(:flush_tasks)` orchestration below, which describe task 05's stage. Disk actions own lock-scoped individual/batch workflows and call `flush_tasks` directly; storage backends retain filesystem operations. Separate individual retry preserves the entry's original replay snapshot, Boolean/exception behavior, warning, and inspection caches. Nil actions return `false` without storage work. No generic lock API, no-op flush, or public retry options are added.
-The entry-only statements below describe task 05's stage. Task 08 wraps both retry surfaces in that separate lock while preserving public enqueue, existing pending WALs, normal scheduling, and entry replay/results/errors.
-The existing dead-store lock remains short-lived. Q-04 is resolved by retaining the source and original error after every enqueue exception, even after a pending write. No private write acknowledgement or receipts are added; REQ-30 remains unchanged. A pending copy can coexist with the retained source, accepting duplicates on recovery or a later operator retry. This amendment does not change this ADR's status.
-
 ## Decision
 
 Use Option C with entry-owned enqueue, optional backend flush, and removal. Continue to defer Option D.
