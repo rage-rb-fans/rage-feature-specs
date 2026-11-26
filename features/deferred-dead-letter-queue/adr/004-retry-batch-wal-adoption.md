@@ -1,8 +1,10 @@
 ---
-status: accepted
+status: rejected
 ---
 
 # ADR-004: Coordinated retry and pending-WAL adoption
+
+> Rejected on 2026-11-26 together with [task 08](../tasks/08-batch-retry-dead-tasks.md). The Rage maintainer decided that batch retry is not needed now. Entry retry loops and bulk delete are enough. This decision does not apply.
 
 ## Context
 

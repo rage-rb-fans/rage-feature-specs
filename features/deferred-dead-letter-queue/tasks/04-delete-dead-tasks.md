@@ -1,5 +1,5 @@
 ---
-status: ready-for-development
+status: done
 ---
 
 # Delete dead tasks
@@ -61,17 +61,17 @@ Task 02's open descriptor continues reading its fixed view after deletion rename
 
 ## Acceptance criteria
 
-- [ ] TC-01 (core) Single-entry deletion returns `true` only for an actual removal and `false` for missing/stale entries.
-- [ ] TC-02 (edge) Entries privately retain the identical backend used by the collection and queue. Entry deletion needs no collection, action handler, or traversal resources.
-- [ ] TC-03 (core) Collection deletion accepts one String or one flat Array of Strings with exact documented results and validation-before-mutation.
-- [ ] TC-04 (core) Collection deletion de-duplicates Array members and handles missing, stale, and empty Array inputs with exact documented results.
-- [ ] TC-05 (core) Collection deletion rejects zero arguments, multiple arguments, nested Arrays, and other non-String values without storage mutation.
-- [ ] TC-06 (core) Disk delegates bulk deletion to one task-01 compaction; Nil returns zero without side effects.
-- [ ] TC-07 (core) Deleting during stable enumeration processes each yielded starting-snapshot entry exactly once and closes snapshot resources. Rescued selected failures print the task 02 diagnostic and remain stored.
-- [ ] TC-08 (edge) Documentation distinguishes mutation-safe small-set entry deletion from the one-compaction bulk-delete pattern and states both the O(selected IDs) accumulator and potential O(N²) repeated-compaction costs.
-- [ ] TC-09 (edge) Concurrent/overlapping deletions preserve unrelated records and divide successful counts according to lock order.
-- [ ] TC-10 (edge) Lock and filesystem failures are propagated without false success or payload disclosure.
-- [ ] TC-11 (edge) Public deletion APIs have complete YARD documentation.
+- [x] TC-01 (core) Single-entry deletion returns `true` only for an actual removal and `false` for missing/stale entries.
+- [x] TC-02 (edge) Entries privately retain the identical backend used by the collection and queue. Entry deletion needs no collection, action handler, or traversal resources.
+- [x] TC-03 (core) Collection deletion accepts one String or one flat Array of Strings with exact documented results and validation-before-mutation.
+- [x] TC-04 (core) Collection deletion de-duplicates Array members and handles missing, stale, and empty Array inputs with exact documented results.
+- [x] TC-05 (core) Collection deletion rejects zero arguments, multiple arguments, nested Arrays, and other non-String values without storage mutation.
+- [x] TC-06 (core) Disk delegates bulk deletion to one task-01 compaction; Nil returns zero without side effects.
+- [x] TC-07 (core) Deleting during stable enumeration processes each yielded starting-snapshot entry exactly once and closes snapshot resources. Rescued selected failures print the task 02 diagnostic and remain stored.
+- [x] TC-08 (edge) Documentation distinguishes mutation-safe small-set entry deletion from the one-compaction bulk-delete pattern and states both the O(selected IDs) accumulator and potential O(N²) repeated-compaction costs.
+- [x] TC-09 (edge) Concurrent/overlapping deletions preserve unrelated records and divide successful counts according to lock order.
+- [x] TC-10 (edge) Lock and filesystem failures are propagated without false success or payload disclosure.
+- [x] TC-11 (edge) Public deletion APIs have complete YARD documentation.
 
 ## Verification
 
@@ -95,7 +95,13 @@ Task 02's open descriptor continues reading its fixed view after deletion rename
 - Reviewed: 2026-11-02.
 - Decided: review finding S1 rejected, with no docs and no follow-up task. S1: a long public `delete` holds the dead-task lock longer than about 1.5 s, so a worker's `add_dead_task` in `Queue#abandon_task` raises `DeadTasksLockTimeout`; the task stays pending and runs again after restart, and for an immediate task the WAL may stop rotating.
 - Decided: code-reading finding dropped for now, with no criterion. `DeadTask#inspect` shows `@__backend`, so `p entry` or an IRB echo prints the Disk backend, including the serialized arguments of pending delayed tasks.
+- Decided 2026-11-26: TC-08 is met by the YARD guidance on bulk deletion. Public YARD states the contract only, so the O(N²) repeated-compaction cost and the O(selected IDs) accumulator memory go to the operator docs of task 06.
+- Decided 2026-11-26: no spec for zero or two arguments to `DeadTasks#delete`. Ruby's method arity raises `ArgumentError`, so such a test cannot fail for a Rage bug. Descriptor cleanup during `each(&:delete)` stays covered by the task 02 traversal specs.
 
 ## Result
 
-- Implementation PR: https://github.com/rage-rb/rage/pull/411
+- Implementation PR: [rage-rb/rage#411](https://github.com/rage-rb/rage/pull/411)
+- Merge commit: [`8ef05fbb34ac33b5e6803de0bc11ef917740cec4`](https://github.com/rage-rb/rage/commit/8ef05fbb34ac33b5e6803de0bc11ef917740cec4)
+- `bundle exec rspec spec/deferred` on Ruby 3.3.0 at the merge commit (2026-11-26): `302 examples, 0 failures`, none pending.
+- `bundle exec rubocop` on the nine files changed by #411: no offenses.
+- `bundle exec yardoc --fail-on-warning`: not run in this check.

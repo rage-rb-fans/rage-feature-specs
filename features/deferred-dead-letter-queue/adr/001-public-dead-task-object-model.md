@@ -90,18 +90,6 @@ Expose exact lookup as `DeadTasks#find_task(id)`. This avoids overriding Enumera
 
 Make `find(id)` perform exact lookup while trying to preserve block-based `find`. This creates two unrelated meanings under one method, risks changing the optional fallback callable and no-block forms, and makes `detect` inconsistent with its Enumerable alias. Reject this option.
 
-
-## Approved batch extension
-
-[ADR-003](003-batch-dead-task-retry.md) defines collection retry for [task 08](../tasks/08-batch-retry-dead-tasks.md).
-The entry-only statements below describe the task-05 stage.
-ADR-003 extends retry ownership and bulk scope while preserving individual entry behavior and the other decisions below.
-Task 08 uses one batch per invocation, without an internal batch-size limit.
-Task 08 remains `draft` after resolving Q-04 through Q-07. [ADR-004](004-retry-batch-wal-adoption.md) records the retry-lock policy, operator guidance, and backend-specific `DeadTaskActions` design. Recording these decisions does not authorize readiness, publication, or implementation.
-For task 08, `DeadTask` and `DeadTasks` retain or obtain actions using the identical existing backend and delegate mutations. This supersedes the no-action-handler/service restriction, direct public-object deletion, and entry-owned retry implementation below, which describe the task-04/task-05 stages. Public validation, inspection, frozen caches, backend identity, and traversal isolation remain unchanged; entries retain no collection reference or traversal resources. Actions retain only the backend and keep all operation progress invocation-local. The factory selects backend-specific actions, with separate individual snapshot replay and batch fresh-selection workflows.
-The entry-only statements below describe task 05's stage. Task 08 wraps both retry surfaces in that separate lock while preserving public enqueue, existing pending WALs, normal scheduling, and entry replay/results/errors.
-The existing dead-store lock remains short-lived. Q-04 is resolved by retaining the source and original error after every enqueue exception, even after a pending write. No private write acknowledgement or receipts are added; REQ-30 remains unchanged. A pending copy can coexist with the retained source, accepting duplicates on recovery or a later operator retry. This amendment does not change this ADR's status.
-
 ## Decision
 
 Adopt traversal Option F with one-at-a-time selected-record attempts, cleanup option 1, and `find_by_id` for public exact lookup. A standard Ruby Enumerator preserves no-block `each` and holds at most the current decoded record. It avoids a custom stream protocol. Deterministic cancellation for partial external or lazy traversal is deferred. A future design can reconsider a closeable cursor or versioned storage. `find_by_id` avoids overriding `Enumerable#find` and `Enumerable#detect`. Those methods retain standard Ruby behavior.

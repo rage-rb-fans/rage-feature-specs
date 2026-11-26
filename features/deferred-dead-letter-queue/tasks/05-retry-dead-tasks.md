@@ -1,5 +1,5 @@
 ---
-status: ready-for-development
+status: done
 ---
 
 # Retry dead tasks
@@ -117,26 +117,26 @@ Place the non-running guard at the top of `Queue#schedule`, not only in the dead
 
 ## Acceptance criteria
 
-- [ ] TC-01 (core) Missing, Nil, or rescued-selected-failure retry returns `false`. Retry returns `true` after the documented enqueue, optional flush, and removal sequence. The result does not prove queue acceptance.
-- [ ] TC-02 (edge) Retry checks existence through exact-ID lookup without shared top-level schema validation. Selected `ArgumentError`, `NameError`, and `TypeError` failures print the task 03 diagnostic and return `false`. Other selected decoding failures propagate. Public lookup entry-construction failures also propagate unchanged. No selected failure falls back to an older duplicate.
-- [ ] TC-03 (edge) `DeadTask#retry` owns the only retry implementation and reuses task 04's private shared backend. `DeadTasks` exposes no `retry` method.
-- [ ] TC-04 (core) Retry resolves and validates the task class without `eval` and preserves the dead record on class or context failure.
-- [ ] TC-05 (core) Retry uses original positional/keyword arguments through a fresh normal enqueue with reset ID, attempts, context, middleware, and telemetry.
-- [ ] TC-06 (edge) Public enqueue retains unconditional `nil` returns, its signature, middleware, and telemetry for Disk and Nil. Retry ignores the return value.
-- [ ] TC-07 (edge) Silent middleware suppression still permits flush, the applicable restart warning, removal, and `true` without pending work. Documentation states this risk.
-- [ ] TC-08 (core) Retry performs public enqueue, optional flush selected through `respond_to?(:flush_tasks)`, and exact-ID removal in that order.
-- [ ] TC-09 (edge) Replay uses an independent mutable graph with Marshal-supported aliases and cycles under normal enqueue splat semantics. Immutable inspection values and their cached identities remain unchanged.
-- [ ] TC-10 (edge) Retry uses the entry's original class and context after the existence check, without constructing another entry. Same-ID replacement does not change replay input; later exact-ID removal can delete the replacement. The original entry metadata and inspection cache remain unchanged. Entry actions work after snapshot cleanup.
-- [ ] TC-11 (core) Disk `flush_tasks` delegates to `TasksStorage#sync!` for the active WAL and storage directory. Other adapters retain ordinary acknowledged persistence semantics.
-- [ ] TC-12 (core) An optional flush failure propagates and preserves the dead record. Documentation states the uncertain pending outcome and possible execution before synchronization.
-- [ ] TC-13 (edge) Documentation states that inherited WAL framing, rotation, and recovery defects remain. Successful retry does not establish complete crash-recovery safety.
-- [ ] TC-14 (edge) Explicit synchronization leaves timer dirty state untouched. Ordinary batching and existing timer-failure behavior remain unchanged.
-- [ ] TC-15 (core) Every pre-enqueue failure leaves the dead record intact. Post-enqueue removal failure reports possible duplication and preserves its cause without claiming rollback.
-- [ ] TC-16 (edge) Concurrent retry/delete outcomes follow the documented duplication and suppression limits and never hold a storage lock across application code.
-- [ ] TC-17 (edge) Retrying during stable enumeration attempts every yielded starting-snapshot entry exactly once. Rescued enumeration failures remain skipped and stored. Documentation states per-task behavior, possible O(N²) work, and no bulk retry.
-- [ ] TC-18 (core) Queue scheduling is unchanged when Iodine is running and persistence-only when it is not.
-- [ ] TC-19 (edge) Out-of-process retry warns without leaking stored payloads and does not claim execution before server restart.
-- [ ] TC-20 (edge) Public retry/error APIs have complete YARD documentation.
+- [x] TC-01 (core) Missing, Nil, or rescued-selected-failure retry returns `false`. Retry returns `true` after the documented enqueue, optional flush, and removal sequence. The result does not prove queue acceptance.
+- [x] TC-02 (edge) Retry checks existence through exact-ID lookup without shared top-level schema validation. Selected `ArgumentError`, `NameError`, and `TypeError` failures print the task 03 diagnostic and return `false`. Other selected decoding failures propagate. Public lookup entry-construction failures also propagate unchanged. No selected failure falls back to an older duplicate.
+- [x] TC-03 (edge) `DeadTask#retry` owns the only retry implementation and reuses task 04's private shared backend. `DeadTasks` exposes no `retry` method.
+- [x] TC-04 (core) Retry resolves and validates the task class without `eval` and preserves the dead record on class or context failure.
+- [x] TC-05 (core) Retry uses original positional/keyword arguments through a fresh normal enqueue with reset ID, attempts, context, middleware, and telemetry.
+- [x] TC-06 (edge) Public enqueue retains unconditional `nil` returns, its signature, middleware, and telemetry for Disk and Nil. Retry ignores the return value.
+- [x] TC-07 (edge) Silent middleware suppression still permits flush, the applicable restart warning, removal, and `true` without pending work. Documentation states this risk.
+- [x] TC-08 (core) Retry performs public enqueue, optional flush selected through `respond_to?(:flush_tasks)`, and exact-ID removal in that order.
+- [x] TC-09 (edge) Replay uses an independent mutable graph with Marshal-supported aliases and cycles under normal enqueue splat semantics. Immutable inspection values and their cached identities remain unchanged.
+- [x] TC-10 (edge) Retry uses the entry's original class and context after the existence check, without constructing another entry. Same-ID replacement does not change replay input; later exact-ID removal can delete the replacement. The original entry metadata and inspection cache remain unchanged. Entry actions work after snapshot cleanup.
+- [x] TC-11 (core) Disk `flush_tasks` delegates to `TasksStorage#sync!` for the active WAL and storage directory. Other adapters retain ordinary acknowledged persistence semantics.
+- [x] TC-12 (core) An optional flush failure propagates and preserves the dead record. Documentation states the uncertain pending outcome and possible execution before synchronization.
+- [x] TC-13 (edge) Documentation states that inherited WAL framing, rotation, and recovery defects remain. Successful retry does not establish complete crash-recovery safety.
+- [x] TC-14 (edge) Explicit synchronization leaves timer dirty state untouched. Ordinary batching and existing timer-failure behavior remain unchanged.
+- [x] TC-15 (core) Every pre-enqueue failure leaves the dead record intact. Post-enqueue removal failure reports possible duplication and preserves its cause without claiming rollback.
+- [x] TC-16 (edge) Concurrent retry/delete outcomes follow the documented duplication and suppression limits and never hold a storage lock across application code.
+- [x] TC-17 (edge) Retrying during stable enumeration attempts every yielded starting-snapshot entry exactly once. Rescued enumeration failures remain skipped and stored. Documentation states per-task behavior, possible O(N²) work, and no bulk retry.
+- [x] TC-18 (core) Queue scheduling is unchanged when Iodine is running and persistence-only when it is not.
+- [x] TC-19 (edge) Out-of-process retry warns without leaking stored payloads and does not claim execution before server restart.
+- [x] TC-20 (edge) Public retry/error APIs have complete YARD documentation.
 
 ## Verification
 
@@ -144,7 +144,7 @@ Place the non-running guard at the top of `Queue#schedule`, not only in the dead
 - Cover one rescued selected failure on a newer frame-valid duplicate. Fallback from a newer frame-invalid duplicate and each rescued failure class stay covered by task 03's Disk lookup specs: retry has one branch for every `nil` lookup.
 - Verify the task 03 diagnostic, `false` result, no enqueue, no removal, stored-record preservation, and no older fallback. Other selected failures get no test: retry has no `rescue` around the lookup, so they pass through unchanged.
 - Verify the existence check, flush, and removal go to the collection's backend. A missing action handler or collection reference gets no test: a test that an ivar is absent cannot fail for a Rage bug.
-- Cover removal or replacement between lookup and the existence check. `DeadTasks` having no `retry` method gets no test: an absence test cannot fail for a Rage bug, and task 08 adds the method. Entries from `find_by_id` and from enumeration are built the same way; task 04 covers acting on an entry from `find_by_id`.
+- Cover removal or replacement between lookup and the existence check. `DeadTasks` having no `retry` method gets no test: an absence test cannot fail for a Rage bug. Entries from `find_by_id` and from enumeration are built the same way; task 04 covers acting on an entry from `find_by_id`.
 - Verify entry retry uses the original class and arguments after same-ID replacement. Preserve original metadata and cached inspection values. Verify later exact-ID removal can delete the replacement.
 - Retry constructing no second entry gets no test: it needs a global negative mock. The same-ID replacement example shows that retry discards the record the existence check returns.
 - Verify a retained entry retries after `first` released its snapshot, and `each(&:retry)` keeps the ongoing traversal.
@@ -179,7 +179,13 @@ Place the non-running guard at the top of `Queue#schedule`, not only in the dead
 - Decided: review finding rejected: no CHANGELOG entry for delete and retry in this branch, although the Requirements ask for one; the `[Unreleased]` line names only listing and inspecting.
 - Decided: review finding rejected: the restart warning uses `warn`, which `-W0` silences; the enabled RuboCop cop `Style/StderrPuts` asks for output that can be turned off.
 - Decided: review finding rejected: two Disk examples for `DeadTasksStorage#remove` failures stay; they prove task 04's requirement on filesystem errors during deletion.
+- Decided 2026-11-26: TC-07, TC-12, and TC-17 are met by the YARD contract. Public YARD states the contract only, so these details go to the operator docs of task 06: that acceptance detection is future work, that a pending task can run before the flush finishes, the possible O(N²) cost, and that there is no bulk retry.
+- Decided 2026-11-26: no separate spec for retry with a Nil entry. Nil never yields an entry, and `Nil#find_dead_task` returns `nil`, so retry takes the tested missing-record path.
 
 ## Result
 
-- Implementation PR: https://github.com/rage-rb/rage/pull/411/
+- Implementation PR: [rage-rb/rage#411](https://github.com/rage-rb/rage/pull/411)
+- Merge commit: [`8ef05fbb34ac33b5e6803de0bc11ef917740cec4`](https://github.com/rage-rb/rage/commit/8ef05fbb34ac33b5e6803de0bc11ef917740cec4)
+- `bundle exec rspec spec/deferred` on Ruby 3.3.0 at the merge commit (2026-11-26): `302 examples, 0 failures`, none pending.
+- `bundle exec rubocop` on the nine files changed by #411: no offenses.
+- `bundle exec yardoc --fail-on-warning`: not run in this check.

@@ -1,8 +1,10 @@
 ---
-status: draft
+status: rejected
 ---
 
 # Retry multiple dead tasks by ID
+
+> Rejected on 2026-11-26. The Rage maintainer decided that batch retry is not needed now. Entry retry loops and bulk delete are enough. Do not implement this task.
 
 ## Goal
 
